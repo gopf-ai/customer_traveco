@@ -54,6 +54,24 @@ This project underwent a major methodology correction. If working with older cod
    - ✅ Sparten distribution analysis - Notebook 05 Section 13
    - ✅ Updated presentation with corrected insights
 
+7. **Forecasting Metrics Expansion** (October 2025):
+   - ❌ **OLD**: 5 target metrics (total_orders, total_km, total_drivers, revenue_total, external_drivers)
+   - ✅ **NEW**: 10 target metrics (added tour-based metrics + vehicle cost metrics)
+   - **Why**: Enable complete financial forecasting (revenue vs cost) and profit margin predictions
+   - **Changes**:
+     - `total_km` → `total_km_billed` (order-based billing KM for revenue forecasts)
+     - **NEW** (7 metrics): `total_km_actual` (tour-based actual driven KM)
+     - **NEW** (7 metrics): `total_tours` (unique tour count for resource planning)
+     - **NEW** (10 metrics): `vehicle_km_cost` (KM-based transportation cost component)
+     - **NEW** (10 metrics): `vehicle_time_cost` (Time-based transportation cost component)
+     - **NEW** (10 metrics): `total_vehicle_cost` (Total vehicle operational cost)
+   - **Cost Formula**: `Total Cost = (Actual KM × PC KM Kosten) + (IST Zeit PraCar × 60 × PC Minuten Kosten)`
+   - **Impact**: Notebooks 08-12 updated to support 10 metrics with backward compatibility
+   - **Files**:
+     - `notebooks/08_time_series_aggregation.ipynb` - Cell-6 (cost calculation), Cell-16 (aggregation), Cell-18 (5-panel visualization)
+     - All forecasting notebooks (09-12) - Updated target_metrics lists
+   - **New Capabilities**: Revenue forecasting, Cost forecasting, Profit margin forecasting
+
 ### Files Most Affected:
 - `notebooks/04_aggregation_and_targets.ipynb` - **Complete rewrite of aggregation logic**
 - `notebooks/03_feature_engineering.ipynb` - Enhanced order types, fixed Sparten, added Betriebszentralen mapping
@@ -490,7 +508,7 @@ filtering:
   exclude_lager_orders: true      # ✅ NEW: Exclude warehouse orders
 
 features:
-  target_columns: ["total_orders", "total_km", "total_drivers", "revenue_total", "external_drivers"]
+  target_columns: ["total_orders", "total_km_billed", "total_km_actual", "total_tours", "total_drivers", "revenue_total", "external_drivers"]
 
 time_decay:
   decay_rate: 0.3                 # λ for exponential decay
@@ -813,7 +831,7 @@ The main forecasting system is implemented as a single stateful class in `Foreca
 ```python
 forecaster = TravecomForecaster(
     data=df,
-    target_columns=['total_orders', 'total_km', 'total_drivers', 'revenue_total', 'external_drivers']
+    target_columns=['total_orders', 'total_km_billed', 'total_km_actual', 'total_tours', 'total_drivers', 'revenue_total', 'external_drivers']
 )
 
 # Standard workflow:
