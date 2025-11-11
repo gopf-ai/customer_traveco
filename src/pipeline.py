@@ -134,7 +134,7 @@ class ForecastingPipeline:
         if validate:
             logger.info("Validating data quality...")
 
-            validation_report = self.validator.generate_validation_report(
+            validation_report = self.validator.validate_dataframe(
                 df_orders_clean,
                 'orders'
             )
