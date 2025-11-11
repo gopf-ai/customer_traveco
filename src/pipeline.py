@@ -14,7 +14,7 @@ from datetime import datetime
 import json
 
 from src.data import DataLoader, DataCleaner, DataValidator, DataAggregator
-from src.features.engineering import FeatureEngine
+from src.features import FeatureEngine
 from src.models.xgboost_forecaster import XGBoostForecaster
 from src.models.baseline_forecasters import (
     SeasonalNaiveForecaster,

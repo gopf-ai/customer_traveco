@@ -2,4 +2,7 @@
 
 from .engineering import TravecomFeatureEngine
 
-__all__ = ['TravecomFeatureEngine']
+# Alias for backward compatibility
+FeatureEngine = TravecomFeatureEngine
+
+__all__ = ['TravecomFeatureEngine', 'FeatureEngine']
