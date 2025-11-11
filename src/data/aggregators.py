@@ -165,8 +165,35 @@ class DataAggregator:
         logger.info(f"Merging tour data ({len(df_tours):,} tours)")
 
         # Ensure year_month exists in tours
-        if 'year_month' not in df_tours.columns and 'date' in df_tours.columns:
+        if 'year_month' not in df_tours.columns:
+            # Try to find and use a date column (in order of preference)
+            date_col = None
+            possible_date_cols = ['date', 'Datum Tour', 'Datum.Tour', 'tour_date']
+
+            for col in possible_date_cols:
+                if col in df_tours.columns:
+                    date_col = col
+                    logger.debug(f"Found tour date column: '{col}'")
+                    break
+
+            if date_col is None:
+                raise ValueError(
+                    f"No date column found in tour data. "
+                    f"Tried: {possible_date_cols}. "
+                    f"Available columns: {df_tours.columns.tolist()[:10]}..."
+                )
+
+            # Create standardized 'date' column if it doesn't exist
+            if date_col != 'date':
+                df_tours['date'] = pd.to_datetime(df_tours[date_col])
+                logger.debug(f"Created 'date' column from '{date_col}'")
+            else:
+                # Ensure existing date column is datetime
+                df_tours['date'] = pd.to_datetime(df_tours['date'])
+
+            # Create year_month
             df_tours['year_month'] = df_tours['date'].dt.to_period('M').astype(str)
+            logger.debug(f"Created 'year_month' column from tour dates")
 
         # Calculate tour-level costs
         # First, ensure all cost columns are numeric (they may contain strings from Excel)
