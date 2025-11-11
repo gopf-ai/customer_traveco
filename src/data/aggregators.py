@@ -169,6 +169,14 @@ class DataAggregator:
             df_tours['year_month'] = df_tours['date'].dt.to_period('M').astype(str)
 
         # Calculate tour-level costs
+        # First, ensure all cost columns are numeric (they may contain strings from Excel)
+        cost_columns_to_convert = ['IstKm.Tour', 'Soll KM PraCar', 'PC KM Kosten',
+                                    'IST Zeit PraCar', 'PC Minuten Kosten']
+        for col in cost_columns_to_convert:
+            if col in df_tours.columns:
+                df_tours[col] = pd.to_numeric(df_tours[col], errors='coerce')
+
+        # Now perform calculations
         if 'IstKm.Tour' in df_tours.columns and 'PC KM Kosten' in df_tours.columns:
             df_tours['vehicle_km_cost'] = df_tours['IstKm.Tour'].fillna(0) * df_tours['PC KM Kosten'].fillna(0)
         elif 'Soll KM PraCar' in df_tours.columns and 'PC KM Kosten' in df_tours.columns:

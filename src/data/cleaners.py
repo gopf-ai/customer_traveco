@@ -58,15 +58,31 @@ class TravecomDataCleaner:
 
         # Filter 2: Exclude B&T pickups
         if self.filtering_rules.get('exclude_bt_pickups', True):
-            if 'System' in df.columns and 'RKdNr' in df.columns:
-                bt_pickup_mask = (df['System'] == 'B&T') & (df['RKdNr'].isna())
+            # Check for RKdNr (cleaned) or RKdNr. (original with dot)
+            rkd_col = None
+            if 'RKdNr' in df.columns:
+                rkd_col = 'RKdNr'
+            elif 'RKdNr.' in df.columns:
+                rkd_col = 'RKdNr.'
+
+            if 'System_id.Auftrag' in df.columns and rkd_col is not None:
+                # B&T pickups: System='B&T' AND empty customer (RKdNr)
+                # "Empty" includes: NaN, empty string, placeholder '-'
+                bt_mask = (df['System_id.Auftrag'] == 'B&T')
+                empty_customer_mask = df[rkd_col].isna() | df[rkd_col].isin(['-', '', ' '])
+                bt_pickup_mask = bt_mask & empty_customer_mask
                 bt_count = bt_pickup_mask.sum()
 
                 if bt_count > 0:
                     df = df[~bt_pickup_mask].copy()
                     logger.info(f"  Excluded {bt_count:,} B&T pickup orders")
             else:
-                logger.warning("  'System' or 'RKdNr' column not found, skipping B&T filter")
+                missing = []
+                if 'System_id.Auftrag' not in df.columns:
+                    missing.append('System_id.Auftrag')
+                if rkd_col is None:
+                    missing.append('RKdNr/RKdNr.')
+                logger.warning(f"  Required columns not found: {missing} - skipping B&T filter")
 
         final_count = len(df)
         removed_count = initial_count - final_count
