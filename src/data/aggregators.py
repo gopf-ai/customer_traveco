@@ -55,15 +55,28 @@ class DataAggregator:
 
         # Ensure year_month exists
         if 'year_month' not in df_orders.columns:
-            # Try to create from date column
-            if 'date' in df_orders.columns:
-                df_orders['year_month'] = df_orders['date'].dt.to_period('M').astype(str)
-            # Or from Datum.Auftrag (order date)
-            elif 'Datum.Auftrag' in df_orders.columns:
-                df_orders['date'] = pd.to_datetime(df_orders['Datum.Auftrag'])
-                df_orders['year_month'] = df_orders['date'].dt.to_period('M').astype(str)
-            else:
-                raise ValueError("No date column found - need 'date' or 'Datum.Auftrag'")
+            # Try to find and use a date column
+            date_col = None
+
+            # Check for possible date columns (in order of preference)
+            possible_date_cols = ['date', 'Datum.Tour', 'Datum.Auftrag']
+
+            for col in possible_date_cols:
+                if col in df_orders.columns:
+                    date_col = col
+                    break
+
+            if date_col is None:
+                raise ValueError(f"No date column found. Tried: {possible_date_cols}. Available columns: {df_orders.columns.tolist()[:10]}...")
+
+            # Create standardized date column if needed
+            if date_col != 'date':
+                df_orders['date'] = pd.to_datetime(df_orders[date_col])
+                logger.info(f"  Created 'date' column from '{date_col}'")
+
+            # Create year_month
+            df_orders['year_month'] = df_orders['date'].dt.to_period('M').astype(str)
+            logger.info(f"  Created 'year_month' column")
 
         # Define aggregation rules
         agg_dict = {
