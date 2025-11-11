@@ -13,10 +13,7 @@ import pickle
 from datetime import datetime
 import json
 
-from src.data.loaders import DataLoader
-from src.data.cleaners import DataCleaner
-from src.data.validators import DataValidator
-from src.data.aggregators import DataAggregator
+from src.data import DataLoader, DataCleaner, DataValidator, DataAggregator
 from src.features.engineering import FeatureEngine
 from src.models.xgboost_forecaster import XGBoostForecaster
 from src.models.baseline_forecasters import (
