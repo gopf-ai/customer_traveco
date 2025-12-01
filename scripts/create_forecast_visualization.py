@@ -147,13 +147,13 @@ def create_metric_chart(metric_name, time_series_df):
     actual_x = df_actual['date'].dt.strftime('%Y-%m-%d').tolist()
     actual_y = df_actual['value'].tolist()
 
-    # Actual line (blue)
+    # Actual line (Traveco green)
     fig.add_trace(go.Scatter(
         x=actual_x,
         y=actual_y,
         mode='lines+markers',
         name='Ist-Werte',
-        line=dict(color='#2563eb', width=2.5),
+        line=dict(color='rgb(0, 133, 42)', width=2.5),
         marker=dict(size=5),
         hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<extra>Ist</extra>'
     ))
@@ -556,7 +556,7 @@ def create_dashboard():
             font-size: 0.85rem;
         }
         .legend-actual {
-            color: #2563eb;
+            color: rgb(0, 133, 42);
             font-weight: 600;
         }
         .legend-forecast {
