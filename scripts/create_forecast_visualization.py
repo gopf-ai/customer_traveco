@@ -38,9 +38,17 @@ METRICS_CONFIG = {
         'type': 'operational',
         'table_header': 'Umsatz (Op.)'
     },
+    'total_betriebsertrag': {
+        'title': 'Total Betriebsertrag (SK 0140)',
+        'subtitle': 'Bestes Modell: XGBoost + Arbeitstage (MAPE: 2.86%)',
+        'unit': 'CHF',
+        'type': 'financial',
+        'invert': True,  # Revenue is negative in accounting
+        'table_header': 'Total Betriebsertrag'
+    },
     'total_revenue': {
         'title': 'Betriebsertrag (SK 35060000+35070000)',
-        'subtitle': 'Bestes Modell: XGBoost (MAPE: 2.59%)',
+        'subtitle': 'Bestes Modell: XGBoost + Arbeitstage (MAPE: 3.12%)',
         'unit': 'CHF',
         'type': 'financial',
         'invert': True,  # Revenue is negative in accounting
@@ -48,7 +56,7 @@ METRICS_CONFIG = {
     },
     'personnel_costs': {
         'title': 'Personalaufwand (SK 0151)',
-        'subtitle': 'Bestes Modell: XGBoost+Personal (MAPE: 2.55%)',
+        'subtitle': 'Bestes Modell: Prophet (MAPE: 3.19%)',
         'unit': 'CHF',
         'type': 'financial',
         'table_header': 'Personalaufw. (SK 0151)'
@@ -59,6 +67,14 @@ METRICS_CONFIG = {
         'unit': 'CHF',
         'type': 'financial',
         'table_header': 'Ausg.frachten (SK 6280)'
+    },
+    'ebt': {
+        'title': 'EBT (SK 0110)',
+        'subtitle': 'Bestes Modell: XGBoost + Arbeitstage (MAPE: 105.03%)',
+        'unit': 'CHF',
+        'type': 'financial',
+        'invert': False,  # Positive = profit, negative = loss
+        'table_header': 'EBT'
     }
 }
 
@@ -229,11 +245,11 @@ def build_data_table(operational_df, fin_actuals, fin_forecasts):
         ts = ts.rename(columns={'value': metric})
         table_df = table_df.merge(ts[['date', metric]], on='date', how='left')
 
-    # Add financial metrics
-    for metric in ['total_revenue', 'personnel_costs', 'external_driver_costs']:
+    # Add financial metrics (including new total_betriebsertrag and ebt)
+    for metric in ['total_betriebsertrag', 'total_revenue', 'personnel_costs', 'external_driver_costs', 'ebt']:
         ts = build_financial_time_series(metric, fin_actuals, fin_forecasts)
-        # Invert revenue
-        if metric == 'total_revenue':
+        # Invert revenue metrics (negative in accounting)
+        if metric in ['total_revenue', 'total_betriebsertrag']:
             ts['value'] = -ts['value']
         ts = ts.rename(columns={'value': metric})
         table_df = table_df.merge(ts[['date', metric]], on='date', how='left')
@@ -248,13 +264,15 @@ def build_data_table(operational_df, fin_actuals, fin_forecasts):
 
 def generate_yearly_summary_html(table_df):
     """Generate yearly summary table with year-over-year changes."""
-    metrics = ['total_orders', 'revenue_total', 'total_revenue', 'personnel_costs', 'external_driver_costs']
+    metrics = ['total_orders', 'revenue_total', 'total_betriebsertrag', 'total_revenue', 'personnel_costs', 'external_driver_costs', 'ebt']
     metric_labels = {
         'total_orders': 'Aufträge',
         'revenue_total': 'Umsatz (Op.)',
+        'total_betriebsertrag': 'Total Betr.ertrag<br><small>(SK 0140)</small>',
         'total_revenue': 'Betriebsertrag<br><small>(SK 3506+3507)</small>',
         'personnel_costs': 'Personalaufw.<br><small>(SK 0151)</small>',
-        'external_driver_costs': 'Ausg.frachten<br><small>(SK 6280)</small>'
+        'external_driver_costs': 'Ausg.frachten<br><small>(SK 6280)</small>',
+        'ebt': 'EBT<br><small>(SK 0110)</small>'
     }
 
     # Group by year and sum
@@ -355,9 +373,11 @@ def generate_table_html(table_df):
                 <th>Typ</th>
                 <th>Aufträge</th>
                 <th>Umsatz (Op.)</th>
+                <th>Total Betr.ertrag<br><small>(SK 0140)</small></th>
                 <th>Betriebsertrag<br><small>(SK 3506+3507)</small></th>
                 <th>Personalaufw.<br><small>(SK 0151)</small></th>
                 <th>Ausg.frachten<br><small>(SK 6280)</small></th>
+                <th>EBT<br><small>(SK 0110)</small></th>
             </tr>
         </thead>
         <tbody>
@@ -378,9 +398,11 @@ def generate_table_html(table_df):
                 <td><span class="badge {'badge-forecast' if row['Typ'] == 'Prognose' else 'badge-actual'}">{row['Typ']}</span></td>
                 <td class="number">{fmt(row['total_orders'])}</td>
                 <td class="number">{fmt(row['revenue_total'])}</td>
+                <td class="number">{fmt(row['total_betriebsertrag'])}</td>
                 <td class="number">{fmt(row['total_revenue'])}</td>
                 <td class="number">{fmt(row['personnel_costs'])}</td>
                 <td class="number">{fmt(row['external_driver_costs'])}</td>
+                <td class="number">{fmt(row['ebt'])}</td>
             </tr>
         """
 
@@ -407,7 +429,7 @@ def create_dashboard():
         print(f"  Erstelle Zeitreihe für: {metric}")
         time_series[metric] = build_operational_time_series(metric, operational_df)
 
-    for metric in ['total_revenue', 'personnel_costs', 'external_driver_costs']:
+    for metric in ['total_betriebsertrag', 'total_revenue', 'personnel_costs', 'external_driver_costs', 'ebt']:
         print(f"  Erstelle Zeitreihe für: {metric}")
         time_series[metric] = build_financial_time_series(metric, fin_actuals, fin_forecasts)
 
@@ -808,7 +830,7 @@ def create_dashboard():
 """
 
     # Add financial charts
-    for metric in ['total_revenue', 'personnel_costs', 'external_driver_costs']:
+    for metric in ['total_betriebsertrag', 'total_revenue', 'personnel_costs', 'external_driver_costs', 'ebt']:
         fig = figures[metric]
         chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
         html_content += f"""
@@ -842,6 +864,12 @@ def create_dashboard():
                     <td>~5%</td>
                 </tr>
                 <tr>
+                    <td>Total Betriebsertrag (SK 0140)</td>
+                    <td>Finanzen</td>
+                    <td>XGBoost</td>
+                    <td>3.48%</td>
+                </tr>
+                <tr>
                     <td>Betriebsertrag (SK 35060000+35070000)</td>
                     <td>Finanzen</td>
                     <td>XGBoost</td>
@@ -849,15 +877,21 @@ def create_dashboard():
                 </tr>
                 <tr>
                     <td>Personalaufwand (SK 0151)</td>
-                    <td>Finanzen + Personal</td>
-                    <td>XGBoost+Personal</td>
-                    <td>2.55%</td>
+                    <td>Finanzen</td>
+                    <td>Prophet</td>
+                    <td>3.19%</td>
                 </tr>
                 <tr>
                     <td>Ausgangsfrachten LKW (SK 62802000)</td>
                     <td>Finanzen</td>
                     <td>XGBoost</td>
                     <td>5.73%</td>
+                </tr>
+                <tr>
+                    <td>EBT (SK 0110)</td>
+                    <td>Finanzen</td>
+                    <td>XGBoost</td>
+                    <td>100.90%</td>
                 </tr>
             </table>
         </div>

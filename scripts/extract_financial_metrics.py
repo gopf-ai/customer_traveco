@@ -42,6 +42,12 @@ ACCOUNTS = {
         # In 2022, LKW wasn't split out until July - use total Ausgangsfrachten account
         # Note: This includes both Bahn (rail) and LKW (truck) for Jan-Jun 2022
         'fallback_2022': ['0628000'],  # Total external freight (summary line)
+    },
+    'total_betriebsertrag': {
+        'default': ['0140'],  # Total Betriebsertrag (Total Operating Revenue)
+    },
+    'ebt': {
+        'default': ['0110'],  # EBT (Earnings Before Tax)
     }
 }
 
@@ -55,7 +61,9 @@ MONTH_COLUMNS = {
 REFERENCE_VALUES = {
     'total_revenue': -13595064.09,
     'personnel_costs': 5776973.95,
-    'external_driver_costs': 1916937.89
+    'external_driver_costs': 1916937.89,
+    'total_betriebsertrag': -13803174.46,  # SK 0140, Jan 2024
+    'ebt': 329514.32  # SK 0110, Jan 2024
 }
 
 

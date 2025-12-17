@@ -7,12 +7,16 @@ Workflow:
 2. Validate against Jan-Sep 2025 actual data
 3. Select best model per metric based on MAPE
 4. Generate forecasts for Oct-Dec 2025 + full 2026
-5. Compare ML vs Human (2024÷12) methods
+5. Compare ML vs Prior Year (same month) methods
 
 Metrics:
-- total_revenue
+- total_revenue (with working days feature)
 - personnel_costs
 - external_driver_costs
+- total_betriebsertrag (with working days feature)
+- ebt (with working days feature)
+
+December 2025: Added working days feature per CFO insight.
 """
 
 import warnings
@@ -31,8 +35,12 @@ import xgboost as xgb
 
 # Configuration
 DATA_PATH = Path(__file__).parent.parent / "data" / "processed" / "financial_metrics_overview.csv"
+WORKING_DAYS_PATH = Path(__file__).parent.parent / "data" / "raw" / "TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v1.xlsx"
 OUTPUT_PATH = Path(__file__).parent.parent / "data" / "processed"
-METRICS = ['total_revenue', 'personnel_costs', 'external_driver_costs']
+METRICS = ['total_revenue', 'personnel_costs', 'external_driver_costs', 'total_betriebsertrag', 'ebt']
+
+# Metrics that benefit from working days feature (based on correlation analysis)
+METRICS_WITH_WORKING_DAYS = ['total_revenue', 'total_betriebsertrag', 'ebt']
 
 
 def load_data() -> pd.DataFrame:
@@ -42,11 +50,40 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-def prepare_time_series(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Prepare time series data for a specific metric."""
-    ts = df[df['metric'] == metric][['date', 'value']].copy()
+def load_working_days() -> pd.DataFrame:
+    """Load working days data from Excel file."""
+    df_wide = pd.read_excel(WORKING_DAYS_PATH)
+
+    # Map German month names to numbers
+    month_map = {
+        'Januar': 1, 'Februar': 2, 'März': 3, 'April': 4, 'Mai': 5, 'Juni': 6,
+        'Juli': 7, 'August': 8, 'September': 9, 'Oktober': 10, 'November': 11, 'Dezember': 12
+    }
+
+    # Transform to long format
+    rows = []
+    for _, row in df_wide.iterrows():
+        year = row['Jahr']
+        for month_name, month_num in month_map.items():
+            days = row[month_name]
+            if pd.notna(days):
+                rows.append({'year': int(year), 'month': month_num, 'working_days': int(days)})
+
+    return pd.DataFrame(rows)
+
+
+def prepare_time_series(df: pd.DataFrame, metric: str, working_days_df: pd.DataFrame = None) -> pd.DataFrame:
+    """Prepare time series data for a specific metric, optionally with working days."""
+    ts = df[df['metric'] == metric][['date', 'value', 'year', 'month']].copy()
     ts = ts.sort_values('date').reset_index(drop=True)
-    ts.columns = ['ds', 'y']
+    ts = ts.rename(columns={'date': 'ds', 'value': 'y'})
+
+    # Add working days if metric benefits from it
+    if working_days_df is not None and metric in METRICS_WITH_WORKING_DAYS:
+        ts = ts.merge(working_days_df, on=['year', 'month'], how='left')
+        # Fill missing working days with average (for forecasting)
+        ts['working_days'] = ts['working_days'].fillna(ts['working_days'].mean())
+
     return ts
 
 
@@ -68,8 +105,8 @@ def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
 
 
-def train_prophet(train: pd.DataFrame, metric: str) -> Tuple[Prophet, Dict]:
-    """Train Prophet model and return model + validation metrics."""
+def train_prophet(train: pd.DataFrame, metric: str) -> Prophet:
+    """Train Prophet model, optionally with working days regressor."""
     model = Prophet(
         yearly_seasonality=True,
         weekly_seasonality=False,
@@ -77,7 +114,15 @@ def train_prophet(train: pd.DataFrame, metric: str) -> Tuple[Prophet, Dict]:
         seasonality_mode='multiplicative',
         changepoint_prior_scale=0.05
     )
-    model.fit(train)
+
+    # Add working days as regressor for relevant metrics
+    use_working_days = metric in METRICS_WITH_WORKING_DAYS and 'working_days' in train.columns
+    if use_working_days:
+        model.add_regressor('working_days')
+
+    # Prepare training data
+    train_cols = ['ds', 'y'] + (['working_days'] if use_working_days else [])
+    model.fit(train[train_cols])
     return model
 
 
@@ -96,11 +141,11 @@ def train_sarimax(train: pd.DataFrame, metric: str) -> SARIMAX:
 
 
 def train_xgboost(train: pd.DataFrame, metric: str) -> Tuple[xgb.XGBRegressor, pd.DataFrame]:
-    """Train XGBoost model with lag features."""
+    """Train XGBoost model with lag features and optionally working days."""
     df = train.copy()
     df['month'] = df['ds'].dt.month
     df['quarter'] = df['ds'].dt.quarter
-    df['year'] = df['ds'].dt.year
+    df['xgb_year'] = df['ds'].dt.year
 
     # Lag features
     for lag in [1, 3, 6, 12]:
@@ -113,8 +158,14 @@ def train_xgboost(train: pd.DataFrame, metric: str) -> Tuple[xgb.XGBRegressor, p
     # Drop NaN rows (first 12 months)
     df_clean = df.dropna()
 
+    # Base feature columns
     feature_cols = ['month', 'quarter', 'lag_1', 'lag_3', 'lag_6', 'lag_12',
                     'rolling_mean_3', 'rolling_mean_6']
+
+    # Add working days for relevant metrics
+    use_working_days = metric in METRICS_WITH_WORKING_DAYS and 'working_days' in df.columns
+    if use_working_days:
+        feature_cols.append('working_days')
 
     X = df_clean[feature_cols]
     y = df_clean['y']
@@ -129,13 +180,28 @@ def train_xgboost(train: pd.DataFrame, metric: str) -> Tuple[xgb.XGBRegressor, p
     )
     model.fit(X, y)
 
+    # Store whether working days was used
+    model.use_working_days = use_working_days
+
     return model, df
 
 
-def predict_prophet(model: Prophet, periods: int, last_date: pd.Timestamp) -> pd.DataFrame:
-    """Generate Prophet predictions."""
-    future = pd.DataFrame({'ds': pd.date_range(start=last_date + pd.DateOffset(months=1),
-                                                periods=periods, freq='MS')})
+def predict_prophet(model: Prophet, periods: int, last_date: pd.Timestamp,
+                    working_days_df: pd.DataFrame = None, metric: str = None) -> pd.DataFrame:
+    """Generate Prophet predictions, with working days if applicable."""
+    dates = pd.date_range(start=last_date + pd.DateOffset(months=1),
+                          periods=periods, freq='MS')
+    future = pd.DataFrame({'ds': dates})
+
+    # Add working days if the model uses it
+    if metric in METRICS_WITH_WORKING_DAYS and working_days_df is not None:
+        future['year'] = future['ds'].dt.year
+        future['month'] = future['ds'].dt.month
+        future = future.merge(working_days_df, on=['year', 'month'], how='left')
+        # Fill missing with average (for future forecasts)
+        future['working_days'] = future['working_days'].fillna(working_days_df['working_days'].mean())
+        future = future[['ds', 'working_days']]
+
     forecast = model.predict(future)
     return forecast[['ds', 'yhat']].rename(columns={'yhat': 'prediction'})
 
@@ -149,13 +215,20 @@ def predict_sarimax(model, periods: int, last_date: pd.Timestamp) -> pd.DataFram
 
 
 def predict_xgboost(model: xgb.XGBRegressor, train_df: pd.DataFrame,
-                    periods: int, last_date: pd.Timestamp) -> pd.DataFrame:
-    """Generate XGBoost predictions recursively."""
+                    periods: int, last_date: pd.Timestamp,
+                    working_days_df: pd.DataFrame = None, metric: str = None) -> pd.DataFrame:
+    """Generate XGBoost predictions recursively, with working days if applicable."""
     df = train_df.copy()
     predictions = []
 
+    # Base feature columns
     feature_cols = ['month', 'quarter', 'lag_1', 'lag_3', 'lag_6', 'lag_12',
                     'rolling_mean_3', 'rolling_mean_6']
+
+    # Check if model uses working days
+    use_working_days = getattr(model, 'use_working_days', False)
+    if use_working_days:
+        feature_cols.append('working_days')
 
     for i in range(periods):
         next_date = last_date + pd.DateOffset(months=i+1)
@@ -165,7 +238,7 @@ def predict_xgboost(model: xgb.XGBRegressor, train_df: pd.DataFrame,
             'ds': next_date,
             'month': next_date.month,
             'quarter': next_date.quarter,
-            'year': next_date.year
+            'xgb_year': next_date.year
         }
 
         # Lag features from historical + predicted data
@@ -186,6 +259,15 @@ def predict_xgboost(model: xgb.XGBRegressor, train_df: pd.DataFrame,
         if len(all_y) >= 6:
             new_row['rolling_mean_6'] = np.mean(all_y[-6:])
 
+        # Add working days if applicable
+        if use_working_days and working_days_df is not None:
+            wd_row = working_days_df[(working_days_df['year'] == next_date.year) &
+                                      (working_days_df['month'] == next_date.month)]
+            if len(wd_row) > 0:
+                new_row['working_days'] = wd_row['working_days'].values[0]
+            else:
+                new_row['working_days'] = working_days_df['working_days'].mean()
+
         # Predict
         X_pred = pd.DataFrame([new_row])[feature_cols]
         pred = model.predict(X_pred)[0]
@@ -201,7 +283,23 @@ def human_baseline(train: pd.DataFrame) -> float:
     return train_2024 / 12
 
 
-def validate_models(train: pd.DataFrame, val: pd.DataFrame, metric: str) -> Dict:
+def same_month_prior_year_baseline(train: pd.DataFrame, val: pd.DataFrame) -> np.ndarray:
+    """Calculate baseline: same month from prior year."""
+    predictions = []
+    for _, row in val.iterrows():
+        month = row['ds'].month
+        year = row['ds'].year - 1  # Previous year
+        prior_value = train[(train['ds'].dt.year == year) &
+                            (train['ds'].dt.month == month)]['y'].values
+        if len(prior_value) > 0:
+            predictions.append(prior_value[0])
+        else:
+            predictions.append(train['y'].mean())  # Fallback
+    return np.array(predictions)
+
+
+def validate_models(train: pd.DataFrame, val: pd.DataFrame, metric: str,
+                    working_days_df: pd.DataFrame = None) -> Dict:
     """Train all models and validate against 2025 data."""
     results = {}
 
@@ -209,28 +307,31 @@ def validate_models(train: pd.DataFrame, val: pd.DataFrame, metric: str) -> Dict
     last_train_date = train['ds'].max()
     n_val_periods = len(val)
 
+    # Check if using working days
+    use_wd = metric in METRICS_WITH_WORKING_DAYS and 'working_days' in train.columns
+    wd_note = " (with working days)" if use_wd else ""
+
     print(f"\n{'='*60}")
-    print(f"Metric: {metric}")
+    print(f"Metric: {metric}{wd_note}")
     print(f"Training: {train['ds'].min().strftime('%Y-%m')} to {last_train_date.strftime('%Y-%m')} ({len(train)} months)")
     print(f"Validation: {val['ds'].min().strftime('%Y-%m')} to {val['ds'].max().strftime('%Y-%m')} ({n_val_periods} months)")
     print(f"{'='*60}")
 
-    # Human baseline
-    human_pred = human_baseline(train)
-    human_preds = np.array([human_pred] * n_val_periods)
-    human_mape = calculate_mape(val['y'].values, human_preds)
-    results['Human (2024÷12)'] = {
-        'mape': human_mape,
-        'predictions': human_preds,
-        'model': None,
-        'monthly_pred': human_pred
+    # Prior Year baseline (same month from prior year)
+    prior_year_preds = same_month_prior_year_baseline(train, val)
+    prior_year_mape = calculate_mape(val['y'].values, prior_year_preds)
+    results['Prior Year'] = {
+        'mape': prior_year_mape,
+        'predictions': prior_year_preds,
+        'model': None
     }
-    print(f"  Human (2024÷12):  MAPE = {human_mape:.2f}%  (constant: {human_pred:,.0f})")
+    print(f"  Prior Year:       MAPE = {prior_year_mape:.2f}%  (same month from 2024)")
 
     # Prophet
     try:
         prophet_model = train_prophet(train, metric)
-        prophet_preds = predict_prophet(prophet_model, n_val_periods, last_train_date)
+        prophet_preds = predict_prophet(prophet_model, n_val_periods, last_train_date,
+                                        working_days_df, metric)
         prophet_mape = calculate_mape(val['y'].values, prophet_preds['prediction'].values)
         results['Prophet'] = {
             'mape': prophet_mape,
@@ -260,7 +361,8 @@ def validate_models(train: pd.DataFrame, val: pd.DataFrame, metric: str) -> Dict
     # XGBoost
     try:
         xgb_model, xgb_train_df = train_xgboost(train, metric)
-        xgb_preds = predict_xgboost(xgb_model, xgb_train_df, n_val_periods, last_train_date)
+        xgb_preds = predict_xgboost(xgb_model, xgb_train_df, n_val_periods, last_train_date,
+                                    working_days_df, metric)
         xgb_mape = calculate_mape(val['y'].values, xgb_preds['prediction'].values)
         results['XGBoost'] = {
             'mape': xgb_mape,
@@ -281,7 +383,8 @@ def validate_models(train: pd.DataFrame, val: pd.DataFrame, metric: str) -> Dict
     return results
 
 
-def generate_forecasts(metric: str, model_results: Dict, full_ts: pd.DataFrame) -> pd.DataFrame:
+def generate_forecasts(metric: str, model_results: Dict, full_ts: pd.DataFrame,
+                       working_days_df: pd.DataFrame = None) -> pd.DataFrame:
     """Generate forecasts for Oct-Dec 2025 + 2026 using best model."""
     best_model_name = model_results['best']
     best_result = model_results[best_model_name]
@@ -293,22 +396,36 @@ def generate_forecasts(metric: str, model_results: Dict, full_ts: pd.DataFrame) 
     # Forecast periods: Oct-Dec 2025 (3) + Jan-Dec 2026 (12) = 15 months
     n_periods = 15
 
-    print(f"\nGenerating {n_periods}-month forecast using {best_model_name}...")
+    # Check if using working days
+    use_wd = metric in METRICS_WITH_WORKING_DAYS and 'working_days' in ts_full.columns
+    wd_note = " (with working days)" if use_wd else ""
 
-    if best_model_name == 'Human (2024÷12)':
-        # Human baseline - use 2024 average
-        pred_value = best_result['monthly_pred']
+    print(f"\nGenerating {n_periods}-month forecast using {best_model_name}{wd_note}...")
+
+    if best_model_name == 'Prior Year':
+        # Prior Year baseline - use same month from prior year
         dates = pd.date_range(start=last_date + pd.DateOffset(months=1),
                               periods=n_periods, freq='MS')
+        predictions = []
+        for d in dates:
+            # Get same month from prior year
+            prior_year = d.year - 1
+            prior_value = ts_full[(ts_full['ds'].dt.year == prior_year) &
+                                  (ts_full['ds'].dt.month == d.month)]['y'].values
+            if len(prior_value) > 0:
+                predictions.append(prior_value[0])
+            else:
+                predictions.append(ts_full['y'].mean())  # Fallback
         forecasts = pd.DataFrame({
             'ds': dates,
-            'prediction': [pred_value] * n_periods
+            'prediction': predictions
         })
 
     elif best_model_name == 'Prophet':
         # Retrain Prophet on all available data
         prophet_model = train_prophet(ts_full, metric)
-        forecasts = predict_prophet(prophet_model, n_periods, last_date)
+        forecasts = predict_prophet(prophet_model, n_periods, last_date,
+                                    working_days_df, metric)
 
     elif best_model_name == 'SARIMAX':
         # Retrain SARIMAX on all available data
@@ -318,7 +435,8 @@ def generate_forecasts(metric: str, model_results: Dict, full_ts: pd.DataFrame) 
     elif best_model_name == 'XGBoost':
         # Retrain XGBoost on all available data
         xgb_model, xgb_train_df = train_xgboost(ts_full, metric)
-        forecasts = predict_xgboost(xgb_model, xgb_train_df, n_periods, last_date)
+        forecasts = predict_xgboost(xgb_model, xgb_train_df, n_periods, last_date,
+                                    working_days_df, metric)
 
     forecasts['metric'] = metric
     forecasts['model'] = best_model_name
@@ -331,20 +449,25 @@ def generate_forecasts(metric: str, model_results: Dict, full_ts: pd.DataFrame) 
 def main():
     """Main forecasting pipeline."""
     print("=" * 70)
-    print("Financial Metrics Forecasting")
+    print("Financial Metrics Forecasting (with Working Days Feature)")
     print("=" * 70)
 
     # Load data
     df = load_data()
     print(f"\nLoaded {len(df)} records from {DATA_PATH.name}")
 
+    # Load working days data
+    working_days_df = load_working_days()
+    print(f"Loaded {len(working_days_df)} working days records")
+    print(f"Metrics using working days: {', '.join(METRICS_WITH_WORKING_DAYS)}")
+
     all_results = {}
     all_forecasts = []
     validation_summary = []
 
     for metric in METRICS:
-        # Prepare time series
-        ts = prepare_time_series(df, metric)
+        # Prepare time series (with working days for relevant metrics)
+        ts = prepare_time_series(df, metric, working_days_df)
 
         if len(ts) == 0:
             print(f"\n⚠️  No data for {metric}, skipping...")
@@ -357,8 +480,8 @@ def main():
             print(f"\n⚠️  No 2025 validation data for {metric}, skipping...")
             continue
 
-        # Validate models
-        results = validate_models(train, val, metric)
+        # Validate models (pass working_days_df)
+        results = validate_models(train, val, metric, working_days_df)
         all_results[metric] = results
 
         # Store validation summary
@@ -371,8 +494,8 @@ def main():
                     'is_best': model_name == results['best']
                 })
 
-        # Generate forecasts using best model
-        forecasts = generate_forecasts(metric, results, ts)
+        # Generate forecasts using best model (pass working_days_df)
+        forecasts = generate_forecasts(metric, results, ts, working_days_df)
         all_forecasts.append(forecasts)
 
     # Combine all forecasts
@@ -408,13 +531,10 @@ def main():
         for _, row in metric_forecasts.iterrows():
             print(f"    {row['year']}-{row['month']:02d}: {row['prediction']:>15,.0f}")
 
-    # Also generate human baseline for comparison
-    print("\n📊 Human Baseline (2024÷12) for Comparison:")
-    for metric in METRICS:
-        ts = prepare_time_series(df, metric)
-        train, _ = split_data(ts)
-        human_pred = human_baseline(train)
-        print(f"  {metric}: {human_pred:,.0f}/month")
+    # Also show prior year baseline comparison info
+    print("\n📊 Prior Year Baseline Info:")
+    print("  Uses same month from prior year for predictions")
+    print("  (e.g., Oct 2025 prediction = Oct 2024 actual)")
 
     return df_forecasts, df_validation
 

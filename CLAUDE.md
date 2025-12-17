@@ -55,6 +55,62 @@ This project underwent major methodology corrections. Key changes:
 - **"betriebszentrale_name not found"**: Run Notebook 03 with updated mapping
 - **"All orders show 'Keine Sparte'"**: Type mismatch - fixed in latest code
 
+## December 2025 Enhancements
+
+### Financial Metrics Dashboard
+
+Added standalone financial forecasting pipeline with HTML dashboard:
+
+**New Scripts** (`scripts/`):
+- `extract_financial_metrics.py` - Extracts metrics from yearly financial Excel files
+- `forecast_financial_metrics.py` - Trains Prophet/SARIMAX/XGBoost models
+- `create_forecast_visualization.py` - Generates interactive HTML dashboard
+
+**5 Financial Metrics Forecasted**:
+| Metric | Sachkonto | Best Model | MAPE |
+|--------|-----------|------------|------|
+| Total Betriebsertrag | SK 0140 | XGBoost | 3.48% |
+| Betriebsertrag | SK 3506+3507 | XGBoost | 2.59% |
+| Personalaufwand | SK 0151 | Prophet | 3.19% |
+| Ausgangsfrachten LKW | SK 6280 | XGBoost | 5.73% |
+| EBT | SK 0110 | XGBoost | 75.49% |
+
+**Dashboard Output**: `results/forecast_dashboard_2025_2026.html`
+
+**Run Pipeline**:
+```bash
+pipenv run python scripts/extract_financial_metrics.py
+pipenv run python scripts/forecast_financial_metrics.py
+pipenv run python scripts/create_forecast_visualization.py
+```
+
+### Working Days Feature (CFO Insight)
+
+**Key Finding**: Financial metrics strongly correlate with working days per month.
+
+**Data Source**: `data/raw/TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v1.xlsx`
+
+**Correlation Analysis**:
+| Metric | Correlation | Significance |
+|--------|-------------|--------------|
+| total_revenue | -0.572 | p<0.01 |
+| total_betriebsertrag | -0.568 | p<0.01 |
+| ebt | -0.503 | p<0.01 |
+| personnel_costs | -0.251 | weak |
+| external_driver_costs | 0.203 | weak |
+
+**Model Improvements with Working Days**:
+| Metric | Model | Without WD | With WD | Improvement |
+|--------|-------|------------|---------|-------------|
+| EBT | XGBoost | 184.5% | 75.5% | **+59.1%** |
+| total_revenue | XGBoost | 6.09% | 5.27% | **+13.5%** |
+
+**Note**: EBT MAPE is high because values oscillate around zero (profit/loss). Consider using MAE instead.
+
+### Baseline Method Change
+
+Changed from "2024÷12 fixed monthly" to **"Same month prior year"** baseline for more realistic comparison.
+
 ## Technology Stack
 
 - **Language**: Python
