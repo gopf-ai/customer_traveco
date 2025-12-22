@@ -35,7 +35,7 @@ import xgboost as xgb
 
 # Configuration
 DATA_PATH = Path(__file__).parent.parent / "data" / "processed" / "financial_metrics_overview.csv"
-WORKING_DAYS_PATH = Path(__file__).parent.parent / "data" / "raw" / "TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v1.xlsx"
+WORKING_DAYS_PATH = Path(__file__).parent.parent / "data" / "raw" / "TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v2.xlsx"
 OUTPUT_PATH = Path(__file__).parent.parent / "data" / "processed"
 METRICS = ['total_revenue', 'personnel_costs', 'external_driver_costs', 'total_betriebsertrag', 'ebt']
 
@@ -52,7 +52,15 @@ def load_data() -> pd.DataFrame:
 
 def load_working_days() -> pd.DataFrame:
     """Load working days data from Excel file."""
-    df_wide = pd.read_excel(WORKING_DAYS_PATH)
+    # Try different header positions to handle different file formats
+    # v1 format: headers in row 0
+    # v2 format: title in row 0, empty row 1, headers in row 2
+    for header_row in [0, 2]:
+        df_wide = pd.read_excel(WORKING_DAYS_PATH, header=header_row)
+        if 'Jahr' in df_wide.columns:
+            break
+    else:
+        raise ValueError(f"Could not find 'Jahr' column in {WORKING_DAYS_PATH}")
 
     # Map German month names to numbers
     month_map = {
@@ -88,9 +96,9 @@ def prepare_time_series(df: pd.DataFrame, metric: str, working_days_df: pd.DataF
 
 
 def split_data(ts: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Split data into train (2022-2024) and validation (Jan-Sep 2025)."""
+    """Split data into train (2022-2024) and validation (Jan-Nov 2025)."""
     train = ts[ts['ds'] < '2025-01-01'].copy()
-    val = ts[(ts['ds'] >= '2025-01-01') & (ts['ds'] <= '2025-09-30')].copy()
+    val = ts[(ts['ds'] >= '2025-01-01') & (ts['ds'] <= '2025-11-30')].copy()
     return train, val
 
 
@@ -385,16 +393,16 @@ def validate_models(train: pd.DataFrame, val: pd.DataFrame, metric: str,
 
 def generate_forecasts(metric: str, model_results: Dict, full_ts: pd.DataFrame,
                        working_days_df: pd.DataFrame = None) -> pd.DataFrame:
-    """Generate forecasts for Oct-Dec 2025 + 2026 using best model."""
+    """Generate forecasts for Dec 2025 + 2026 using best model."""
     best_model_name = model_results['best']
     best_result = model_results[best_model_name]
 
-    # Use all data up to Sep 2025 for final forecast
-    ts_full = full_ts[full_ts['ds'] <= '2025-09-30'].copy()
+    # Use all data up to Nov 2025 for final forecast
+    ts_full = full_ts[full_ts['ds'] <= '2025-11-30'].copy()
     last_date = ts_full['ds'].max()
 
-    # Forecast periods: Oct-Dec 2025 (3) + Jan-Dec 2026 (12) = 15 months
-    n_periods = 15
+    # Forecast periods: Dec 2025 (1) + Jan-Dec 2026 (12) = 13 months
+    n_periods = 13
 
     # Check if using working days
     use_wd = metric in METRICS_WITH_WORKING_DAYS and 'working_days' in ts_full.columns

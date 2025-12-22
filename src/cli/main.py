@@ -78,14 +78,60 @@ def cli():
     is_flag=True,
     help='Do not save trained models to disk'
 )
-def train(config, start_date, end_date, skip_baseline, skip_xgboost, skip_revenue, no_save):
+@click.option(
+    '--use-processed/--no-use-processed',
+    default=True,
+    help='[DEPRECATED] Use --data-source instead'
+)
+@click.option(
+    '--data-source',
+    type=click.Choice(['processed', 'historic', 'validation', 'custom']),
+    default=None,
+    help='Data source: processed (aggregated CSV, fastest), historic (2022-2025 pkl), '
+         'validation (single month), custom (specify path)'
+)
+@click.option(
+    '--custom-file',
+    type=str,
+    default=None,
+    help='Custom file path (required if --data-source=custom)'
+)
+@click.option(
+    '--cv/--no-cv',
+    default=False,
+    help='Use time series cross-validation for XGBoost (slower but more rigorous)'
+)
+@click.option(
+    '--cv-folds',
+    type=int,
+    default=5,
+    help='Number of folds for cross-validation (default: 5)'
+)
+@click.option(
+    '--validation-months',
+    type=int,
+    default=6,
+    help='Number of months to use for validation holdout (default: 6)'
+)
+def train(config, start_date, end_date, skip_baseline, skip_xgboost, skip_revenue, no_save,
+          use_processed, data_source, custom_file, cv, cv_folds, validation_months):
     """
     Train forecasting models on historical data
 
-    Example:
-        traveco-forecast train
-        traveco-forecast train --start-date 2022-01-01 --end-date 2024-12-31
-        traveco-forecast train --skip-baseline
+    Requires minimum 36 months (3 years) of historical data for reliable forecasts.
+
+    Data Sources:
+      --data-source processed (default): Pre-aggregated CSV (fastest, 36 months)
+      --data-source historic:            Full historic master file 2022-2025 (45 months)
+      --data-source validation:          Single-month validation file (June 2025)
+      --data-source custom:              Custom file path (specify with --custom-file)
+
+    Examples:
+      traveco train                                    # Use processed data (default)
+      traveco train --data-source historic             # Train on 2022-2025 master file
+      traveco train --start-date 2023-01-01            # Train on 2023-2024 subset
+      traveco train --skip-baseline                    # Skip baseline models
+      traveco train --data-source custom --custom-file path/to/data.pkl
     """
     console.print(Panel.fit(
         "[bold cyan]Traveco Forecasting System - Model Training[/bold cyan]",
@@ -97,39 +143,118 @@ def train(config, start_date, end_date, skip_baseline, skip_xgboost, skip_revenu
         console.print("\n[yellow]Initializing pipeline...[/yellow]")
         pipeline = ForecastingPipeline(config_path=config)
 
+        # Determine data source (handle backward compatibility)
+        if data_source is None:
+            data_source = 'processed' if use_processed else 'validation'
+
+        # Warn if using validation or custom data
+        if data_source == 'validation':
+            console.print(
+                "[yellow]⚠️  Loading from validation data (single file). "
+                "May not have sufficient months for training.[/yellow]"
+            )
+        elif data_source == 'custom':
+            console.print(
+                f"[yellow]⚠️  Loading from custom file: {custom_file}[/yellow]"
+            )
+
         # Load data
         console.print("\n[yellow]Loading historical data...[/yellow]")
         df_train = pipeline.load_data(
             start_date=start_date,
             end_date=end_date,
-            validate=True
+            validate=True,
+            data_source=data_source,
+            custom_file=custom_file
         )
 
-        console.print(f"[green]✓[/green] Loaded {len(df_train)} months of data")
-        console.print(f"  Date range: {df_train['date'].min()} to {df_train['date'].max()}")
+        # Display configuration summary
+        config_info = []
+        data_source_display = data_source.capitalize()
+        config_info.append(f"[bold]Data Source:[/bold]    {data_source_display} ({len(df_train)} months)")
+        config_info.append(f"[bold]Date Range:[/bold]     {df_train['date'].min().strftime('%Y-%m-%d')} → {df_train['date'].max().strftime('%Y-%m-%d')}")
+
+        # Count available metrics
+        core_metrics = pipeline.config.get('features.core_metrics', ['revenue_total', 'personnel_costs', 'external_drivers'])
+        available_metrics = [m for m in core_metrics if m in df_train.columns]
+        config_info.append(f"[bold]Metrics:[/bold]        {', '.join(available_metrics)}")
+
+        # Model configuration
+        model_config = []
+        if not skip_baseline:
+            model_config.append("✓ Baseline")
+        else:
+            model_config.append("✗ Baseline")
+        if not skip_xgboost:
+            model_config.append("✓ XGBoost")
+        else:
+            model_config.append("✗ XGBoost")
+        if not skip_revenue:
+            model_config.append("✓ Revenue")
+        else:
+            model_config.append("✗ Revenue")
+        config_info.append(f"[bold]Models:[/bold]         {' '.join(model_config)}")
+
+        console.print(Panel("\n".join(config_info), title="Configuration", border_style="cyan"))
 
         # Train models
         console.print("\n[yellow]Training models...[/yellow]")
+        if cv:
+            console.print(f"[cyan]  Using {cv_folds}-fold cross-validation for XGBoost[/cyan]")
+        else:
+            console.print(f"[cyan]  Using {validation_months}-month holdout validation for XGBoost[/cyan]")
+
         models = pipeline.train_models(
             df_train=df_train,
             train_baseline=not skip_baseline,
             train_xgboost=not skip_xgboost,
             train_revenue=not skip_revenue,
-            save_models=not no_save
+            save_models=not no_save,
+            xgboost_validation_months=validation_months,
+            xgboost_cv_folds=cv_folds if cv else None
         )
 
         # Display results
         console.print("\n[bold green]✓ Training Complete![/bold green]\n")
 
-        table = Table(title="Trained Models")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Models", style="green")
+        # Create comprehensive training results table
+        table = Table(title="Training Results", show_header=True, header_style="bold cyan")
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Model", style="yellow")
+        table.add_column("Validation MAPE", justify="right", style="green")
+        table.add_column("Features", justify="right", style="dim")
 
         for metric, metric_models in models.items():
-            model_list = ", ".join(metric_models.keys())
-            table.add_row(metric, model_list)
+            for idx, (model_name, model_obj) in enumerate(metric_models.items()):
+                # Get validation metrics if available (XGBoost uses validation_metrics)
+                mape_str = "—"
+                features_str = "—"
+
+                # Try validation_metrics first (XGBoost), then fall back to training_metrics (baselines)
+                if hasattr(model_obj, 'validation_metrics') and model_obj.validation_metrics:
+                    mape = model_obj.validation_metrics.get('mape', None)
+                    if mape is not None:
+                        mape_str = f"{mape:.2f}%"
+                        # Add CV std if available
+                        if 'mape_std' in model_obj.validation_metrics:
+                            mape_std = model_obj.validation_metrics['mape_std']
+                            mape_str = f"{mape:.2f}% ± {mape_std:.2f}%"
+                elif hasattr(model_obj, 'training_metrics') and model_obj.training_metrics:
+                    # Baselines still use in-sample metrics
+                    mape = model_obj.training_metrics.get('mape', None)
+                    if mape is not None:
+                        mape_str = f"{mape:.2f}% *"  # Add asterisk for in-sample
+
+                if hasattr(model_obj, 'feature_cols') and model_obj.feature_cols:
+                    features_str = str(len(model_obj.feature_cols))
+
+                # Show metric name only on first row
+                metric_display = metric if idx == 0 else ""
+
+                table.add_row(metric_display, model_name, mape_str, features_str)
 
         console.print(table)
+        console.print("[dim]* Baseline models use in-sample metrics (no validation split)[/dim]")
 
         if pipeline.revenue_ensemble:
             weights = pipeline.revenue_ensemble.get_weights()
@@ -137,9 +262,118 @@ def train(config, start_date, end_date, skip_baseline, skip_xgboost, skip_revenu
             console.print(f"  Simple Model: {weights['percentage_model']:.1%}")
             console.print(f"  ML Model:     {weights['ml_model']:.1%}")
 
+    except ValueError as e:
+        error_msg = str(e)
+        # Check if it's a data validation error
+        if any(keyword in error_msg for keyword in ["Insufficient data", "Invalid date", "NaT", "year 2000"]):
+            console.print(f"\n[bold red]✗ Data Validation Failed[/bold red]")
+            console.print(f"[red]{error_msg}[/red]\n")
+            console.print("[yellow]Suggestions:[/yellow]")
+            console.print("  1. Use processed data (default): [cyan]pipenv run python -m src.cli.main train[/cyan]")
+            console.print("  2. Ensure raw files contain complete 2022-2024 historical data")
+            console.print("  3. Check that Excel date columns are formatted as dates (not text)")
+            console.print("  4. Verify Excel files are not corrupted")
+            logger.error(f"Data validation failed: {error_msg}")
+            raise click.Abort()
+        else:
+            # Other ValueError
+            console.print(f"\n[bold red]✗ Error:[/bold red] {error_msg}")
+            logger.exception("Training failed")
+            raise click.Abort()
+
     except Exception as e:
         console.print(f"\n[bold red]✗ Error:[/bold red] {str(e)}")
         logger.exception("Training failed")
+        raise click.Abort()
+
+
+@cli.command('build-master')
+@click.option(
+    '--config',
+    '-c',
+    type=click.Path(exists=True),
+    default='config/config.yaml',
+    help='Path to configuration file'
+)
+@click.option(
+    '--years',
+    type=str,
+    default='2022,2023,2024,2025',
+    help='Comma-separated years to process (e.g., "2022,2023,2024,2025")'
+)
+@click.option(
+    '--output',
+    '-o',
+    type=click.Path(),
+    default=None,
+    help='Output file path (default: data/processed/historic_orders_YYYY_YYYY.pkl)'
+)
+@click.option(
+    '--formats',
+    type=str,
+    default='pkl,csv',
+    help='Comma-separated output formats: pkl,csv,parquet (default: "pkl,csv")'
+)
+def build_master(config, years, output, formats):
+    """
+    Build master historical dataset from raw Excel files
+
+    Loads all monthly order files across multiple years (2022-2025),
+    applies feature engineering, filtering rules, and saves to processed formats.
+
+    This creates a unified dataset that can be used for training with:
+      traveco train --data-source historic
+
+    Examples:
+      traveco build-master                           # Build 2022-2025 dataset
+      traveco build-master --years "2022,2023,2024"  # Build 2022-2024 only
+      traveco build-master --formats "pkl,csv,parquet"  # Save all formats
+    """
+    console.print(Panel.fit(
+        "[bold cyan]Traveco Forecasting System - Build Master File[/bold cyan]",
+        border_style="cyan"
+    ))
+
+    try:
+        # Parse years
+        year_list = [int(y.strip()) for y in years.split(',')]
+        console.print(f"\n[yellow]Years to process: {year_list}[/yellow]")
+
+        # Parse formats
+        format_list = [f.strip() for f in formats.split(',')]
+        console.print(f"[yellow]Output formats: {format_list}[/yellow]")
+
+        # Initialize pipeline
+        console.print("\n[yellow]Initializing pipeline...[/yellow]")
+        pipeline = ForecastingPipeline(config_path=config)
+
+        # Build master file
+        console.print("\n[bold cyan]Building master file...[/bold cyan]\n")
+        df_master = pipeline.build_master_file(
+            years=year_list,
+            output_formats=format_list,
+            output_path=output
+        )
+
+        # Success message
+        console.print(f"\n[bold green]✓ Master file built successfully![/bold green]")
+        console.print(f"Records: {len(df_master):,}")
+        console.print(f"Columns: {len(df_master.columns)}")
+        console.print(f"Date Range: {df_master['date'].min()} to {df_master['date'].max()}")
+
+        console.print("\n[cyan]You can now train with:[/cyan]")
+        console.print("  [bold]traveco train --data-source historic[/bold]")
+
+    except ValueError as e:
+        error_msg = str(e)
+        console.print(f"\n[bold red]✗ Build Failed[/bold red]")
+        console.print(f"[red]{error_msg}[/red]")
+        logger.error(f"Master file build failed: {error_msg}")
+        raise click.Abort()
+
+    except Exception as e:
+        console.print(f"\n[bold red]✗ Error:[/bold red] {str(e)}")
+        logger.exception("Master file build failed")
         raise click.Abort()
 
 

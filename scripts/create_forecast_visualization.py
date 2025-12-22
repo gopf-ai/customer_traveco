@@ -102,8 +102,8 @@ def load_operational_data():
 
 
 def load_financial_data():
-    """Load financial data (actuals 2022-Sep 2025 + forecasts Oct 2025-Dec 2026)."""
-    # Actuals (2022 - Sep 2025)
+    """Load financial data (actuals 2022-Nov 2025 + forecasts Dec 2025-Dec 2026)."""
+    # Actuals (2022 - Nov 2025)
     actuals_df = pd.read_csv(DATA_PATH / "financial_metrics_overview.csv")
     actuals_df['date'] = pd.to_datetime(
         actuals_df['year'].astype(str) + '-' +
@@ -111,7 +111,7 @@ def load_financial_data():
     )
     actuals_df['source'] = 'actual'
 
-    # Forecasts (Oct 2025 - Dec 2026)
+    # Forecasts (Dec 2025 - Dec 2026)
     forecasts_df = pd.read_csv(DATA_PATH / "financial_metrics_forecasts.csv")
     forecasts_df['date'] = pd.to_datetime(forecasts_df['ds'])
     forecasts_df = forecasts_df.rename(columns={'prediction': 'value'})
@@ -189,11 +189,11 @@ def create_metric_chart(metric_name, time_series_df):
             hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<extra>Prognose</extra>'
         ))
 
-    # Add vertical line at forecast start (Oct 2025)
+    # Add vertical line at forecast start (Dec 2025)
     fig.add_shape(
         type='line',
-        x0='2025-10-01',
-        x1='2025-10-01',
+        x0='2025-12-01',
+        x1='2025-12-01',
         y0=0,
         y1=1,
         yref='paper',
@@ -256,7 +256,7 @@ def build_data_table(operational_df, fin_actuals, fin_forecasts):
 
     # Add source column
     table_df['Typ'] = table_df['date'].apply(
-        lambda d: 'Prognose' if d >= pd.Timestamp('2025-10-01') else 'Ist'
+        lambda d: 'Prognose' if d >= pd.Timestamp('2025-12-01') else 'Ist'
     )
 
     return table_df
@@ -783,7 +783,7 @@ def create_dashboard():
     <div class="header">
         <div class="header-content">
             <h1>Prognose Dashboard</h1>
-            <p>Historische Daten (Jan 2022 - Sep 2025) | Prognose (Okt 2025 - Dez 2026)</p>
+            <p>Historische Daten (Jan 2022 - Nov 2025) | Prognose (Dez 2025 - Dez 2026)</p>
         </div>
         <div class="header-logo">
             <svg xmlns="http://www.w3.org/2000/svg" width="235.791" height="32.909" viewBox="0 0 235.791 32.909">
@@ -805,7 +805,7 @@ def create_dashboard():
         <div class="legend-info">
             <span class="legend-actual">&#9632; Ist-Werte</span>
             <span class="legend-forecast">&#9670; Prognose</span>
-            <span style="color:#6b7280">| Gestrichelte Linie = Prognosestart (Okt 2025)</span>
+            <span style="color:#6b7280">| Gestrichelte Linie = Prognosestart (Dez 2025)</span>
         </div>
 
         <div class="section-title">Operative Kennzahlen (aus Auftragsdaten)</div>
@@ -900,8 +900,8 @@ def create_dashboard():
     <!-- Table Tab -->
     <div id="table" class="tab-content">
         <div class="legend-info">
-            <span class="legend-actual">&#9632; Ist-Werte (Jan 2022 - Sep 2025)</span>
-            <span class="legend-forecast">&#9670; Prognose (Okt 2025 - Dez 2026)</span>
+            <span class="legend-actual">&#9632; Ist-Werte (Jan 2022 - Nov 2025)</span>
+            <span class="legend-forecast">&#9670; Prognose (Dez 2025 - Dez 2026)</span>
         </div>
 
 """

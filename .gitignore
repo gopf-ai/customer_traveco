@@ -64,3 +64,4 @@ logs/
 *.tmp
 *.temp
 fix_dates.py
+documentation/

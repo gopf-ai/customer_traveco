@@ -41,7 +41,7 @@ class SeasonalNaiveForecaster(BaseForecaster):
         Returns:
             Self (for method chaining)
         """
-        logger.info(f"Fitting Seasonal Naive model for '{target_col}'")
+        logger.debug(f"Fitting Seasonal Naive model for '{target_col}'")
 
         self.target_col = target_col
 
@@ -57,7 +57,12 @@ class SeasonalNaiveForecaster(BaseForecaster):
 
         self.is_fitted = True
 
-        logger.info(f"✅ Seasonal Naive fitted with {len(self.monthly_values)} monthly averages")
+        # Calculate training metrics (in-sample predictions)
+        y_true = df_train[target_col].values
+        y_pred = df_train['month'].map(self.monthly_values).values
+        self.training_metrics = self._calculate_metrics(y_true, y_pred)
+
+        logger.debug(f"✅ Seasonal Naive fitted (MAPE: {self.training_metrics['mape']:.2f}%)")
 
         return self
 
@@ -145,7 +150,7 @@ class MovingAverageForecaster(BaseForecaster):
         Returns:
             Self (for method chaining)
         """
-        logger.info(f"Fitting Moving Average (window={self.window}) for '{target_col}'")
+        logger.debug(f"Fitting Moving Average (window={self.window}) for '{target_col}'")
 
         self.target_col = target_col
 
@@ -157,7 +162,13 @@ class MovingAverageForecaster(BaseForecaster):
 
         self.is_fitted = True
 
-        logger.info(f"✅ Moving Average fitted with last {len(self.last_values)} values")
+        # Calculate simple training metrics (constant prediction = mean of window)
+        forecast_value = np.mean(self.last_values)
+        y_true = df_sorted[target_col].tail(self.window).values
+        y_pred = np.full_like(y_true, forecast_value)
+        self.training_metrics = self._calculate_metrics(y_true, y_pred)
+
+        logger.debug(f"✅ Moving Average fitted (MAPE: {self.training_metrics['mape']:.2f}%)")
 
         return self
 
@@ -245,7 +256,7 @@ class LinearTrendForecaster(BaseForecaster):
         Returns:
             Self (for method chaining)
         """
-        logger.info(f"Fitting Linear Trend model for '{target_col}'")
+        logger.debug(f"Fitting Linear Trend model for '{target_col}'")
 
         self.target_col = target_col
 
@@ -269,7 +280,11 @@ class LinearTrendForecaster(BaseForecaster):
 
         self.is_fitted = True
 
-        logger.info(f"✅ Linear Trend fitted (slope={self.slope:.2f}, intercept={self.intercept:.0f})")
+        # Calculate training metrics
+        y_pred = model.predict(X)
+        self.training_metrics = self._calculate_metrics(y, y_pred)
+
+        logger.debug(f"✅ Linear Trend fitted (MAPE: {self.training_metrics['mape']:.2f}%)")
 
         return self
 

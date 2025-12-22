@@ -347,9 +347,60 @@ class TravecomFeatureEngine:
 
         return X_train, X_val, y_train, y_val, train_dates, val_dates
 
+    def convert_date_column(self, date_column: pd.Series) -> pd.Series:
+        """
+        Convert date column to proper datetime
+
+        Handles:
+        - Excel serial dates (numeric: 45809 = June 1, 2025)
+        - ISO format strings (YYYY-MM-DD from CSV)
+        - Swiss date format strings (DD.MM.YYYY)
+        - Already converted datetime
+
+        Args:
+            date_column: Pandas Series with dates
+
+        Returns:
+            Series with proper datetime values
+        """
+        # If already datetime, return as-is
+        if pd.api.types.is_datetime64_any_dtype(date_column):
+            return date_column
+
+        # Check if it's numeric (Excel serial date)
+        if pd.api.types.is_numeric_dtype(date_column):
+            # Excel serial dates: days since 1899-12-30 (Excel's epoch)
+            excel_epoch = pd.Timestamp('1899-12-30')
+            result = pd.to_datetime(excel_epoch) + pd.to_timedelta(date_column, unit='D')
+            return result
+
+        # Try different string formats
+        # First, try ISO format (from CSV files)
+        try:
+            result = pd.to_datetime(date_column, format='ISO8601')
+            return result
+        except:
+            pass
+
+        # Try Swiss format (DD.MM.YYYY)
+        try:
+            result = pd.to_datetime(date_column, format='%d.%m.%Y', dayfirst=True)
+            return result
+        except:
+            pass
+
+        # Final fallback: let pandas infer
+        try:
+            result = pd.to_datetime(date_column)
+            return result
+        except Exception as e:
+            raise ValueError(f"Could not convert date column. Error: {e}")
+
     def convert_excel_dates(self, series: pd.Series) -> pd.Series:
         """
         Convert Excel date serial numbers to datetime
+
+        DEPRECATED: Use convert_date_column() instead for more robust handling
 
         Args:
             series: Series with date values (may be numeric or datetime)
@@ -357,11 +408,7 @@ class TravecomFeatureEngine:
         Returns:
             Series with datetime values
         """
-        if pd.api.types.is_numeric_dtype(series):
-            # Excel serial date: days since 1900-01-01
-            return pd.to_datetime('1899-12-30') + pd.to_timedelta(series, 'D')
-        else:
-            return pd.to_datetime(series, errors='coerce')
+        return self.convert_date_column(series)
 
     def identify_carrier_type(
         self,

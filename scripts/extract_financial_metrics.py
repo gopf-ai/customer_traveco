@@ -176,8 +176,8 @@ def extract_year_data(year: int) -> list[dict]:
         if sachkonto:
             sachkonto_data[sachkonto] = row
 
-    # Determine how many months to extract (2025 only has 9 months)
-    max_month = 9 if year == 2025 else 12
+    # Determine how many months to extract (2025 has 11 months through November)
+    max_month = 11 if year == 2025 else 12
 
     results = []
     warned_accounts = set()

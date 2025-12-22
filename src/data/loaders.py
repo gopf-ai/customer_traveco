@@ -2,9 +2,21 @@
 
 import pandas as pd
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+import os
+import re
 from src.utils.config import ConfigLoader
 from src.utils.logging_config import get_logger
+
+# Rich components for progress tracking
+try:
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+    rich_console = Console()
+except ImportError:
+    RICH_AVAILABLE = False
+    rich_console = None
 
 
 logger = get_logger(__name__)
@@ -238,14 +250,14 @@ class TravecomDataLoader:
             file_name = self.config.get('data.personnel_costs_file')
 
         if file_name is None:
-            logger.warning("Personnel costs file not configured")
+            logger.debug("Personnel costs file not configured (optional)")
             return pd.DataFrame()
 
         file_path = self.data_path / file_name
-        logger.info(f"Loading personnel costs from: {file_path}")
+        logger.debug(f"Loading personnel costs from: {file_path}")
 
         if not file_path.exists():
-            logger.warning(f"Personnel costs file not found: {file_path}")
+            logger.debug(f"Personnel costs file not found: {file_path} (optional)")
             return pd.DataFrame()
 
         df = pd.read_excel(file_path)
@@ -284,14 +296,14 @@ class TravecomDataLoader:
             file_name = self.config.get('data.total_revenue_file')
 
         if file_name is None:
-            logger.warning("Total revenue file not configured")
+            logger.debug("Total revenue file not configured (optional)")
             return pd.DataFrame()
 
         file_path = self.data_path / file_name
-        logger.info(f"Loading total revenue from: {file_path}")
+        logger.debug(f"Loading total revenue from: {file_path}")
 
         if not file_path.exists():
-            logger.warning(f"Total revenue file not found: {file_path}")
+            logger.debug(f"Total revenue file not found: {file_path} (optional)")
             return pd.DataFrame()
 
         df = pd.read_excel(file_path)
@@ -344,6 +356,351 @@ class TravecomDataLoader:
         logger.info(f"Loaded {len(df):,} historic orders ({df['date'].min()} to {df['date'].max()})")
 
         return df
+
+    def load_historic_orders_multi_year(
+        self,
+        years: List[int] = None,
+        base_path: Path = None
+    ) -> pd.DataFrame:
+        """
+        Load and combine all monthly order files across multiple years
+
+        Scans data/raw/{year}/ directories for monthly Excel files and combines them.
+
+        Args:
+            years: List of years to load (default: [2022, 2023, 2024, 2025])
+            base_path: Base directory containing year folders (default: data/raw)
+
+        Returns:
+            DataFrame with combined order data from all years
+        """
+        if years is None:
+            years = self.config.get('data.historic_years', [2022, 2023, 2024, 2025])
+
+        if base_path is None:
+            # Use data/raw instead of the swisstransfer folder
+            base_path = Path(self.config.get_path('data.processed_path')).parent / 'raw'
+
+        logger.info(f"Loading historic orders from {len(years)} years: {years}")
+        logger.info(f"Base path: {base_path}")
+
+        all_dataframes = []
+        total_files = 0
+
+        # First pass: count files
+        for year in years:
+            year_path = base_path / str(year)
+            if not year_path.exists():
+                logger.warning(f"Year directory not found: {year_path}")
+                continue
+
+            files = [f for f in os.listdir(year_path)
+                    if 'QS Auftragsanalyse' in f and f.endswith(('.xlsx', '.xlsb'))]
+            total_files += len(files)
+
+        logger.info(f"Found {total_files} monthly files to load")
+
+        # Second pass: load files with progress tracking
+        if RICH_AVAILABLE and rich_console:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("({task.completed}/{task.total})"),
+                TimeElapsedColumn(),
+                console=rich_console
+            ) as progress:
+                task = progress.add_task("[cyan]Loading monthly files...", total=total_files)
+
+                for year in years:
+                    year_path = base_path / str(year)
+                    if not year_path.exists():
+                        continue
+
+                    # Find all monthly files
+                    files = sorted([f for f in os.listdir(year_path)
+                                   if 'QS Auftragsanalyse' in f and f.endswith(('.xlsx', '.xlsb'))])
+
+                    for file_name in files:
+                        file_path = year_path / file_name
+                        progress.update(task, description=f"[cyan]Loading {year}/{file_name[:20]}...")
+
+                        try:
+                            # Load Excel file
+                            if file_name.endswith('.xlsb'):
+                                df = pd.read_excel(file_path, engine='pyxlsb')
+                            else:
+                                df = pd.read_excel(file_path)
+
+                            # Clean column names
+                            df = self.clean_column_names(df)
+
+                            # Add source metadata
+                            df['_source_year'] = year
+                            df['_source_file'] = file_name
+
+                            all_dataframes.append(df)
+                            progress.advance(task)
+
+                        except Exception as e:
+                            logger.error(f"Error loading {file_path}: {e}")
+                            progress.advance(task)
+                            continue
+        else:
+            # Fallback without progress bar
+            file_count = 0
+            for year in years:
+                year_path = base_path / str(year)
+                if not year_path.exists():
+                    continue
+
+                files = sorted([f for f in os.listdir(year_path)
+                               if 'QS Auftragsanalyse' in f and f.endswith(('.xlsx', '.xlsb'))])
+
+                for file_name in files:
+                    file_count += 1
+                    file_path = year_path / file_name
+                    logger.info(f"  [{file_count}/{total_files}] Loading {year}/{file_name}")
+
+                    try:
+                        if file_name.endswith('.xlsb'):
+                            df = pd.read_excel(file_path, engine='pyxlsb')
+                        else:
+                            df = pd.read_excel(file_path)
+
+                        df = self.clean_column_names(df)
+                        df['_source_year'] = year
+                        df['_source_file'] = file_name
+                        all_dataframes.append(df)
+
+                    except Exception as e:
+                        logger.error(f"Error loading {file_path}: {e}")
+                        continue
+
+        # Combine all dataframes
+        if not all_dataframes:
+            raise ValueError(f"No data files found in {base_path} for years {years}")
+
+        logger.info(f"Combining {len(all_dataframes)} monthly files...")
+        df_combined = pd.concat(all_dataframes, ignore_index=True)
+
+        logger.info(f"✓ Loaded {len(df_combined):,} orders from {len(all_dataframes)} files")
+        logger.info(f"  Columns: {len(df_combined.columns)}")
+        logger.info(f"  Years: {sorted(df_combined['_source_year'].unique().tolist())}")
+
+        return df_combined
+
+    def load_historic_tours_multi_year(
+        self,
+        years: List[int] = None,
+        base_path: Path = None
+    ) -> pd.DataFrame:
+        """
+        Load and combine all tour files across multiple years
+
+        Args:
+            years: List of years to load (default: [2022, 2023, 2024, 2025])
+            base_path: Base directory containing year folders (default: data/raw)
+
+        Returns:
+            DataFrame with combined tour data from all years
+        """
+        if years is None:
+            years = self.config.get('data.historic_years', [2022, 2023, 2024, 2025])
+
+        if base_path is None:
+            base_path = Path(self.config.get_path('data.processed_path')).parent / 'raw'
+
+        logger.info(f"Loading historic tours from {len(years)} years: {years}")
+
+        all_dataframes = []
+
+        for year in years:
+            year_path = base_path / str(year)
+            if not year_path.exists():
+                logger.warning(f"Year directory not found: {year_path}")
+                continue
+
+            # Find tour file (pattern: "QS Tourenaufstellung")
+            tour_files = [f for f in os.listdir(year_path)
+                         if 'QS Tourenaufstellung' in f and f.endswith('.xlsx')]
+
+            if not tour_files:
+                logger.warning(f"No tour file found for year {year}")
+                continue
+
+            # Load first matching file
+            file_path = year_path / tour_files[0]
+            logger.info(f"  Loading {year}/{tour_files[0]}")
+
+            try:
+                df = pd.read_excel(file_path)
+                df = self.clean_column_names(df)
+                df['_source_year'] = year
+                all_dataframes.append(df)
+
+            except Exception as e:
+                logger.error(f"Error loading {file_path}: {e}")
+                continue
+
+        if not all_dataframes:
+            logger.warning(f"No tour files found for years {years}")
+            return pd.DataFrame()
+
+        # Combine all dataframes
+        df_combined = pd.concat(all_dataframes, ignore_index=True)
+
+        logger.info(f"✓ Loaded {len(df_combined):,} tours from {len(all_dataframes)} files")
+
+        return df_combined
+
+    def load_personnel_costs_single_year(self, year: int) -> pd.DataFrame:
+        """
+        Load personnel costs for a single year.
+
+        Extracts 4 key personnel metrics from Excel files:
+        - Row 8: Saldo Mehrarbeitszeit h (Overtime balance in hours)
+        - Row 10: Feriensaldo t (Vacation balance in days)
+        - Row 16: Krank h (Sick leave in hours)
+        - Row 18: Total Ges. Absenz (Total absence in hours)
+
+        Args:
+            year: Year to load (2022-2025)
+
+        Returns:
+            DataFrame with columns: metric_name, jan, feb, mar, ..., dec
+        """
+        # Build file path
+        file_path = Path(f'data/raw/{year}/{year} Personal/Personal {year}.xlsx')
+
+        if not file_path.exists():
+            logger.warning(f"Personnel file not found: {file_path}")
+            return pd.DataFrame()
+
+        logger.info(f"Loading personnel costs from {file_path}")
+
+        # Read Excel file
+        # Row 6: Month headers (Jan, Feb, Mär, ...)
+        # Row 7: Unit indicator (TFr.)
+        # Row 8+: Data starts
+        df = pd.read_excel(
+            file_path,
+            sheet_name=str(year),
+            skiprows=7,  # Skip to row 8 (data starts)
+            usecols='A,C:N',  # Column A (metric name) + C-N (months Jan-Dec)
+            nrows=12,  # Read 12 potential rows
+            engine='openpyxl'
+        )
+
+        # Set proper column names
+        month_names = ['jan', 'feb', 'mar', 'apr', 'mai', 'jun',
+                      'jul', 'aug', 'sep', 'okt', 'nov', 'dez']
+        df.columns = ['metric_name'] + month_names
+
+        # Define target metrics and their row indices (0-indexed after skiprows)
+        # Row 8 in Excel → index 0 after skiprows=7
+        # Row 10 in Excel → index 2 after skiprows=7
+        # Row 16 in Excel → index 8 after skiprows=7
+        # Row 18 in Excel → index 10 after skiprows=7
+        target_metrics = {
+            0: 'Saldo Mehrarbeitszeit h',
+            2: 'Feriensaldo t',
+            8: 'Krank h',
+            10: 'Total Ges. Absenz'
+        }
+
+        # Filter to only target rows
+        df_filtered = []
+        for idx, metric_name in target_metrics.items():
+            if idx < len(df):
+                row = df.iloc[idx:idx+1].copy()
+                # Override metric name to standardize
+                row['metric_name'] = metric_name
+                df_filtered.append(row)
+
+        if not df_filtered:
+            logger.warning(f"No personnel metrics found in {file_path}")
+            return pd.DataFrame()
+
+        df_result = pd.concat(df_filtered, ignore_index=True)
+
+        # For 2025: only 9 months (Jan-Sep), set Oct-Dec to NaN
+        if year == 2025:
+            for month in ['okt', 'nov', 'dez']:
+                if month in df_result.columns:
+                    df_result[month] = None
+
+        logger.info(f"✓ Loaded {len(df_result)} metrics for {year}")
+
+        return df_result
+
+    def load_personnel_costs_multi_year(self, years: List[int] = None) -> pd.DataFrame:
+        """
+        Load personnel costs for multiple years and pivot to wide format.
+
+        Creates a wide-format DataFrame with:
+        - Rows: 4 metrics
+        - Columns: {year}_{month} for all year-month combinations
+
+        Args:
+            years: List of years to load (default: [2022, 2023, 2024, 2025])
+
+        Returns:
+            Wide-format DataFrame with columns like: metric_name, 2022_jan, 2022_feb, ...
+        """
+        if years is None:
+            years = [2022, 2023, 2024, 2025]
+
+        logger.info(f"Loading personnel costs for years: {years}")
+
+        all_data = []
+
+        # Load each year
+        for year in years:
+            df_year = self.load_personnel_costs_single_year(year)
+
+            if df_year.empty:
+                logger.warning(f"Skipping {year} - no data loaded")
+                continue
+
+            # Add year prefix to month columns
+            month_cols = [col for col in df_year.columns if col != 'metric_name']
+            rename_map = {col: f'{year}_{col}' for col in month_cols}
+            df_year = df_year.rename(columns=rename_map)
+
+            all_data.append(df_year)
+
+        if not all_data:
+            logger.error("No personnel data loaded for any year")
+            return pd.DataFrame()
+
+        # Merge all years on metric_name
+        df_result = all_data[0]
+        for df in all_data[1:]:
+            df_result = df_result.merge(df, on='metric_name', how='outer')
+
+        # Reorder columns: metric_name, then chronological year_month
+        month_order = ['jan', 'feb', 'mar', 'apr', 'mai', 'jun',
+                      'jul', 'aug', 'sep', 'okt', 'nov', 'dez']
+
+        ordered_cols = ['metric_name']
+        for year in sorted(years):
+            for month in month_order:
+                col_name = f'{year}_{month}'
+                if col_name in df_result.columns:
+                    ordered_cols.append(col_name)
+
+        df_result = df_result[ordered_cols]
+
+        # Calculate total months with data (excluding 2025 Q4)
+        data_cols = [col for col in df_result.columns if col != 'metric_name']
+        total_months = len([col for col in data_cols if not col.startswith('2025_') or
+                          col.endswith(('jan', 'feb', 'mar', 'apr', 'mai', 'jun', 'jul', 'aug', 'sep'))])
+
+        logger.info(f"✓ Combined personnel costs: {len(df_result)} metrics × {total_months} months")
+
+        return df_result
 
     # Aliases for pipeline compatibility
     def load_orders(self, file_name: Optional[str] = None) -> pd.DataFrame:

@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional
 from src.utils.logging_config import get_logger
+from src.features.engineering import TravecomFeatureEngine
 
 
 logger = get_logger(__name__)
@@ -30,6 +31,7 @@ class DataAggregator:
             config: Configuration dictionary
         """
         self.config = config if config else {}
+        self.feature_engine = TravecomFeatureEngine(self.config)
 
     def aggregate_orders_monthly(
         self,
@@ -71,12 +73,37 @@ class DataAggregator:
 
             # Create standardized date column if needed
             if date_col != 'date':
-                df_orders['date'] = pd.to_datetime(df_orders[date_col])
-                logger.info(f"  Created 'date' column from '{date_col}'")
+                df_orders['date'] = self.feature_engine.convert_date_column(df_orders[date_col])
+                logger.info(f"  Created 'date' column from '{date_col}' (Excel serial date conversion)")
+
+            # Validate dates are reasonable
+            min_date = df_orders['date'].min()
+            max_date = df_orders['date'].max()
+
+            if pd.isna(min_date) or pd.isna(max_date):
+                raise ValueError(
+                    f"Invalid dates found in column '{date_col}': contains NaT values. "
+                    "Check date formatting in Excel file."
+                )
+
+            if min_date.year < 2000:
+                raise ValueError(
+                    f"Invalid dates in column '{date_col}': {min_date} to {max_date}. "
+                    f"Dates before year 2000 indicate parsing issues. "
+                    f"Check Excel date format (should be date, not text)."
+                )
 
             # Create year_month
             df_orders['year_month'] = df_orders['date'].dt.to_period('M').astype(str)
             logger.info(f"  Created 'year_month' column")
+
+        # Convert numeric columns to proper types before aggregation
+        # (Excel files often contain string values that need conversion)
+        numeric_columns_to_convert = ['∑ Einnahmen', 'Distanz_BE.Auftrag']
+        for col in numeric_columns_to_convert:
+            if col in df_orders.columns:
+                df_orders[col] = pd.to_numeric(df_orders[col], errors='coerce')
+                logger.debug(f"  Converted '{col}' to numeric type")
 
         # Define aggregation rules
         agg_dict = {
@@ -134,7 +161,7 @@ class DataAggregator:
 
         # Add date column
         if 'date' not in df_monthly.columns:
-            df_monthly['date'] = pd.to_datetime(df_monthly['year_month'] + '-01')
+            df_monthly['date'] = pd.to_datetime(df_monthly['year_month'].astype(str) + '-01')
 
         logger.info(f"Aggregated to {len(df_monthly):,} monthly records")
 
@@ -185,11 +212,11 @@ class DataAggregator:
 
             # Create standardized 'date' column if it doesn't exist
             if date_col != 'date':
-                df_tours['date'] = pd.to_datetime(df_tours[date_col])
-                logger.debug(f"Created 'date' column from '{date_col}'")
+                df_tours['date'] = self.feature_engine.convert_date_column(df_tours[date_col])
+                logger.debug(f"Created 'date' column from '{date_col}' (Excel serial date conversion)")
             else:
                 # Ensure existing date column is datetime
-                df_tours['date'] = pd.to_datetime(df_tours['date'])
+                df_tours['date'] = self.feature_engine.convert_date_column(df_tours['date'])
 
             # Create year_month
             df_tours['year_month'] = df_tours['date'].dt.to_period('M').astype(str)
@@ -453,7 +480,7 @@ class DataAggregator:
 
         # Add date column
         if 'date' not in df_company.columns:
-            df_company['date'] = pd.to_datetime(df_company['year_month'] + '-01')
+            df_company['date'] = pd.to_datetime(df_company['year_month'].astype(str) + '-01')
 
         # Add month and year
         df_company['month'] = df_company['date'].dt.month
@@ -524,6 +551,21 @@ class DataAggregator:
         # Step 6: Add total revenue (company-level only)
         if df_total_revenue is not None and not df_total_revenue.empty:
             df_monthly = self.add_total_revenue(df_monthly, df_total_revenue)
+
+        # Step 7: Ensure all metric columns are numeric (final type safety check)
+        numeric_metrics = [
+            'total_orders', 'revenue_total', 'total_km_billed', 'total_km_actual',
+            'total_tours', 'total_drivers', 'internal_drivers', 'external_drivers',
+            'vehicle_km_cost', 'vehicle_time_cost', 'total_vehicle_cost',
+            'personnel_costs', 'total_revenue_all', 'working_days',
+            'revenue_per_order', 'km_per_order', 'km_efficiency'
+        ]
+
+        for col in numeric_metrics:
+            if col in df_monthly.columns:
+                df_monthly[col] = pd.to_numeric(df_monthly[col], errors='coerce')
+
+        logger.debug("✅ All metric columns converted to numeric types")
 
         # Sort by date
         df_monthly = df_monthly.sort_values('date').reset_index(drop=True)

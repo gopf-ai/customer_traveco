@@ -9,7 +9,8 @@ This is a **transport logistics forecasting and analysis project** for Traveco (
 **Client**: Traveco (Switzerland)
 **Objective**: Forecast transport metrics using ML models, validate against actual 2025 data, and provide actionable insights
 **Stage**: Production forecasting system with validation framework
-**Key Achievement**: ML forecasts validated against 9 months of 2025 data
+**Last Updated**: December 2025 (data through November 2025)
+**Key Achievement**: ML forecasts validated against 11 months of 2025 data
 - Orders: ML 5.6% more accurate than traditional method
 - Revenue: Traditional 7.4% more accurate than ML
 - Recommendation: **Hybrid approach** (ML for operations, traditional for revenue)
@@ -86,24 +87,39 @@ pipenv run python scripts/create_forecast_visualization.py
 
 ### Working Days Feature (CFO Insight)
 
-**Key Finding**: Financial metrics strongly correlate with working days per month.
+**Key Finding**: Both financial and operational metrics correlate with working days per month.
 
-**Data Source**: `data/raw/TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v1.xlsx`
+**Data Source**: `data/raw/TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v2.xlsx`
 
-**Correlation Analysis**:
-| Metric | Correlation | Significance |
-|--------|-------------|--------------|
-| total_revenue | -0.572 | p<0.01 |
-| total_betriebsertrag | -0.568 | p<0.01 |
-| ebt | -0.503 | p<0.01 |
-| personnel_costs | -0.251 | weak |
-| external_driver_costs | 0.203 | weak |
+**Correlation Analysis Script**: `scripts/analyze_working_days_correlation.py`
+**Output**: `data/processed/working_days_correlation_analysis.csv`
 
-**Model Improvements with Working Days**:
-| Metric | Model | Without WD | With WD | Improvement |
-|--------|-------|------------|---------|-------------|
-| EBT | XGBoost | 184.5% | 75.5% | **+59.1%** |
-| total_revenue | XGBoost | 6.09% | 5.27% | **+13.5%** |
+#### Financial Metrics (from `scripts/forecast_financial_metrics.py`)
+| Metric | Correlation | Significance | Use Working Days |
+|--------|-------------|--------------|------------------|
+| total_revenue | -0.572 | p<0.01 | ✅ Yes |
+| total_betriebsertrag | -0.568 | p<0.01 | ✅ Yes |
+| ebt | -0.503 | p<0.01 | ✅ Yes |
+| personnel_costs | -0.251 | weak | ❌ No |
+| external_driver_costs | 0.203 | weak | ❌ No |
+
+#### Operational Metrics (from correlation analysis Dec 2025)
+| Metric | Correlation | P-Value | Use Working Days |
+|--------|-------------|---------|------------------|
+| total_drivers | 0.832 | <0.001 | ✅ Yes |
+| total_orders | 0.825 | <0.001 | ✅ Yes |
+| total_km_billed | 0.804 | <0.001 | ✅ Yes |
+| total_tours | 0.710 | <0.001 | ✅ Yes |
+| revenue_total | 0.634 | <0.001 | ✅ Yes |
+| vehicle_time_cost | 0.615 | <0.001 | ✅ Yes |
+| total_vehicle_cost | 0.599 | <0.001 | ✅ Yes |
+| total_km_actual | 0.585 | <0.001 | ✅ Yes |
+| vehicle_km_cost | 0.562 | <0.001 | ✅ Yes |
+| **external_drivers** | **0.278** | **0.10** | ❌ **No** |
+
+**Key Insight**: 9 of 10 operational metrics show strong positive correlation with working days (more working days = more activity). Only `external_drivers` has weak/insignificant correlation and is excluded.
+
+**Implementation**: Notebooks 10 (Prophet) and 12 (XGBoost) now selectively include `working_days` as a feature based on the `METRICS_WITH_WORKING_DAYS` list.
 
 **Note**: EBT MAPE is high because values oscillate around zero (profit/loss). Consider using MAE instead.
 
@@ -153,19 +169,25 @@ customer_traveco/
 │       ├── time_series_full_company.csv          # 10 metrics time series
 │       └── consolidated_forecast_2025.csv        # Final forecasts
 ├── results/                                       # Generated charts and reports
-│   ├── forecast_validation_*.html                # 5 interactive dashboards
-│   ├── forecast_validation_*.csv                 # 2 validation reports
-│   └── Traveco_Data_Insights_June2025_Corrected.pptx
+│   ├── forecast_validation_*.html                # Interactive validation dashboards
+│   ├── forecast_validation_*.csv                 # Validation reports
+│   ├── forecast_dashboard_2025_2026.html         # Financial metrics dashboard
+│   └── FORECAST_MODEL_COMPARISON_FINAL.md        # Model comparison results
+├── scripts/                                       # Standalone Python scripts
+│   ├── analyze_working_days_correlation.py       # Working days correlation analysis
+│   ├── extract_financial_metrics.py              # Financial data extraction
+│   ├── forecast_financial_metrics.py             # Financial forecasting
+│   └── create_forecast_visualization.py          # Dashboard generation
 ├── utils/
 │   └── traveco_utils.py                          # Core utilities
 ├── config/
 │   └── config.yaml                               # Configuration
-├── create_presentation.py                        # PowerPoint generator
-└── documentation/
-    ├── SESSION_SUMMARY.md                        # Complete session history
-    ├── FORECAST_VALIDATION_RESULTS.md            # Validation analysis
-    ├── FORECAST_VALIDATION_README.md             # Validation framework guide
-    └── FORECAST_METHODOLOGY.md                   # Technical methodology
+├── documentation/                                 # Video recordings
+│   └── *.mp4                                      # Session recordings (German)
+├── CLAUDE.md                                      # This file - main project guide
+├── README.md                                      # Project overview
+├── TROUBLESHOOTING.md                             # Common issues and solutions
+└── FORECAST_METHODOLOGY.md                        # Technical methodology
 ```
 
 ## Development Commands
@@ -330,9 +352,10 @@ xgb.XGBRegressor(
 - **Stage**: Production forecasting system with validation framework
 - **Repository**: `git@github.com:kevinkuhn/customer_traveco.git`
 - **Branch**: `feature/christian-feedback-corrections`
-- **Latest Commit**: Added 2025 forecasting capabilities (10 metrics)
+- **Data Coverage**: 2022-2024 historical + Jan-Nov 2025 actual data
+- **Latest Enhancement**: Selective working_days feature based on correlation analysis
 - **Key Achievement**: Complete ML validation framework
-  - 9 months of 2025 actual data (Jan-Sep)
+  - 11 months of 2025 actual data (Jan-Nov)
   - ML forecasts beat traditional by 5.6% for order volume
   - Traditional beats ML by 7.4% for revenue
   - **Recommendation**: Hybrid approach (ML for ops, traditional for revenue)
@@ -422,14 +445,13 @@ features:
 
 ## Documentation Files
 
-- **SESSION_SUMMARY.md**: Complete session history and results
-- **FORECAST_VALIDATION_RESULTS.md**: Comprehensive validation analysis
-- **FORECAST_VALIDATION_README.md**: Validation framework guide
-- **FORECAST_METHODOLOGY.md**: Technical methodology (1,027 lines)
-- **FINAL_RESULTS_SUMMARY.md**: Executive summary (448 lines)
-- **COST_BUG_FIX.md**: Vehicle cost calculation fix details
-- **NOTEBOOK_12_FIX.md**: XGBoost debugging documentation
+- **CLAUDE.md**: This file - main project guide and development reference
+- **README.md**: Project overview and quick start
 - **TROUBLESHOOTING.md**: Common issues and solutions
+- **FORECAST_METHODOLOGY.md**: Technical methodology documentation
+- **results/FORECAST_MODEL_COMPARISON_FINAL.md**: Model comparison results
+- **information/recommendation.md**: Strategic recommendations
+- **information/mail.pdf**: Data field explanations from Traveco
 
 ## Next Steps
 
