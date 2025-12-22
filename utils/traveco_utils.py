@@ -406,6 +406,9 @@ class TravecomFeatureEngine:
         internal_max = self.config.get('filtering.internal_carrier_max', 8889)
         external_min = self.config.get('filtering.external_carrier_min', 9000)
 
+        # Convert carrier column to numeric (may be string from Excel)
+        df[carrier_col] = pd.to_numeric(df[carrier_col], errors='coerce')
+
         df['carrier_type'] = df[carrier_col].apply(
             lambda x: 'internal' if pd.notna(x) and x <= internal_max
                      else 'external' if pd.notna(x) and x >= external_min
