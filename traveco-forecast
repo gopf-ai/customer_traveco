@@ -1,8 +1,0 @@
-#!/usr/bin/env python
-"""Convenience script for running the Traveco forecasting CLI"""
-
-import sys
-from src.cli.main import cli
-
-if __name__ == '__main__':
-    sys.exit(cli())
