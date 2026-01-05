@@ -20,61 +20,99 @@ import plotly.graph_objects as go
 BASE_PATH = Path(__file__).parent.parent
 DATA_PATH = BASE_PATH / "data" / "processed"
 OUTPUT_PATH = BASE_PATH / "results"
+WORKING_DAYS_PATH = BASE_PATH / "data" / "raw" / "TRAVECO_Arbeitstage_2022-laufend_für gopf.com_hb v2.xlsx"
+
+
+# Model color scheme (consistent across all charts)
+MODEL_COLORS = {
+    'XGBoost': '#2563eb',         # Blue
+    'Prophet': '#7c3aed',         # Purple
+    'Prior Year': '#f97316',      # Orange
+    'Seasonal Naive': '#14b8a6',  # Teal
+    'SARIMAX': '#6b7280',         # Gray (rarely shown)
+}
 
 
 # Metric configurations with German labels (Traveco terminology)
+# Models are sorted by MAPE (lowest first = best)
 METRICS_CONFIG = {
     'total_orders': {
         'title': 'Aufträge',
-        'subtitle': 'Monatliches Auftragsvolumen',
         'unit': 'Anzahl',
         'type': 'operational',
-        'table_header': 'Aufträge'
+        'table_header': 'Aufträge',
+        'models': [
+            {'name': 'XGBoost', 'mape': 3.60, 'is_best': True},
+            {'name': 'Seasonal Naive', 'mape': None, 'is_best': False},
+        ]
     },
     'revenue_total': {
         'title': 'Umsatz (Operativ)',
-        'subtitle': 'Umsatz aus Auftragsdaten',
         'unit': 'CHF',
         'type': 'operational',
-        'table_header': 'Umsatz (Op.)'
+        'table_header': 'Umsatz (Op.)',
+        'models': [
+            {'name': 'Seasonal Naive', 'mape': 4.10, 'is_best': True},
+            {'name': 'XGBoost', 'mape': 5.25, 'is_best': False},
+        ]
     },
     'total_betriebsertrag': {
         'title': 'Total Betriebsertrag (SK 0140)',
-        'subtitle': 'Bestes Modell: XGBoost + Arbeitstage (MAPE: 2.86%)',
         'unit': 'CHF',
         'type': 'financial',
         'invert': True,  # Revenue is negative in accounting
-        'table_header': 'Total Betriebsertrag'
+        'table_header': 'Total Betriebsertrag',
+        'models': [
+            {'name': 'XGBoost', 'mape': 3.06, 'is_best': True},
+            {'name': 'Prophet', 'mape': 3.78, 'is_best': False},
+            {'name': 'Prior Year', 'mape': 4.02, 'is_best': False},
+        ]
     },
     'total_revenue': {
         'title': 'Betriebsertrag (SK 35060000+35070000)',
-        'subtitle': 'Bestes Modell: XGBoost + Arbeitstage (MAPE: 3.12%)',
         'unit': 'CHF',
         'type': 'financial',
         'invert': True,  # Revenue is negative in accounting
-        'table_header': 'Betriebsertrag (SK 3506+3507)'
+        'table_header': 'Betriebsertrag (SK 3506+3507)',
+        'models': [
+            {'name': 'XGBoost', 'mape': 3.22, 'is_best': True},
+            {'name': 'Prophet', 'mape': 3.93, 'is_best': False},
+            {'name': 'Prior Year', 'mape': 4.15, 'is_best': False},
+        ]
     },
     'personnel_costs': {
         'title': 'Personalaufwand (SK 0151)',
-        'subtitle': 'Bestes Modell: Prophet (MAPE: 3.19%)',
         'unit': 'CHF',
         'type': 'financial',
-        'table_header': 'Personalaufw. (SK 0151)'
+        'table_header': 'Personalaufw. (SK 0151)',
+        'models': [
+            {'name': 'XGBoost', 'mape': 2.98, 'is_best': True},
+            {'name': 'Prophet', 'mape': 3.45, 'is_best': False},
+            {'name': 'Prior Year', 'mape': 4.24, 'is_best': False},
+        ]
     },
     'external_driver_costs': {
         'title': 'Ausgangsfrachten LKW (SK 62802000)',
-        'subtitle': 'Bestes Modell: XGBoost (MAPE: 5.73%)',
         'unit': 'CHF',
         'type': 'financial',
-        'table_header': 'Ausg.frachten (SK 6280)'
+        'table_header': 'Ausg.frachten (SK 6280)',
+        'models': [
+            {'name': 'Prior Year', 'mape': 6.01, 'is_best': True},
+            {'name': 'XGBoost', 'mape': 6.52, 'is_best': False},
+            {'name': 'Prophet', 'mape': 12.68, 'is_best': False},
+        ]
     },
     'ebt': {
         'title': 'EBT (SK 0110)',
-        'subtitle': 'Bestes Modell: XGBoost + Arbeitstage (MAPE: 105.03%)',
         'unit': 'CHF',
         'type': 'financial',
         'invert': False,  # Positive = profit, negative = loss
-        'table_header': 'EBT'
+        'table_header': 'EBT',
+        'models': [
+            {'name': 'XGBoost', 'mape': 92.89, 'is_best': True},
+            {'name': 'Prior Year', 'mape': 140.64, 'is_best': False},
+            {'name': 'Prophet', 'mape': 279.07, 'is_best': False},
+        ]
     }
 }
 
@@ -120,30 +158,103 @@ def load_financial_data():
     return actuals_df, forecasts_df
 
 
-def build_operational_time_series(metric_name, operational_df):
+def load_comparison_forecasts():
+    """Load XGBoost comparison forecasts for metrics that use different best models."""
+    comparison_file = DATA_PATH / "comparison_forecasts.csv"
+    if comparison_file.exists():
+        df = pd.read_csv(comparison_file)
+        df['date'] = pd.to_datetime(df['date'])
+        return df
+    return None
+
+
+def load_working_days() -> pd.DataFrame:
+    """Load working days data from Excel file."""
+    # Try different header positions to handle different file formats
+    for header_row in [0, 2]:
+        df_wide = pd.read_excel(WORKING_DAYS_PATH, header=header_row)
+        if 'Jahr' in df_wide.columns:
+            break
+    else:
+        raise ValueError(f"Could not find 'Jahr' column in {WORKING_DAYS_PATH}")
+
+    # Map German month names to numbers
+    month_map = {
+        'Januar': 1, 'Februar': 2, 'März': 3, 'April': 4, 'Mai': 5, 'Juni': 6,
+        'Juli': 7, 'August': 8, 'September': 9, 'Oktober': 10, 'November': 11, 'Dezember': 12
+    }
+
+    # Transform to long format
+    rows = []
+    for _, row in df_wide.iterrows():
+        year = row['Jahr']
+        for month_name, month_num in month_map.items():
+            days = row[month_name]
+            if pd.notna(days):
+                rows.append({'year': int(year), 'month': month_num, 'working_days': int(days)})
+
+    return pd.DataFrame(rows)
+
+
+def build_operational_time_series(metric_name, operational_df, working_days_df=None):
     """Build time series for an operational metric."""
     df = operational_df[['date', metric_name, 'source']].copy()
     df = df.rename(columns={metric_name: 'value'})
     df = df.sort_values('date').reset_index(drop=True)
+
+    # Merge working days if provided
+    if working_days_df is not None:
+        df['year'] = df['date'].dt.year
+        df['month'] = df['date'].dt.month
+        df = df.merge(working_days_df, on=['year', 'month'], how='left')
+        df = df.drop(columns=['year', 'month'])
+
     return df
 
 
-def build_financial_time_series(metric_name, actuals_df, forecasts_df):
+def build_financial_time_series(metric_name, actuals_df, forecasts_df, working_days_df=None):
     """Build time series for a financial metric."""
     actual_data = actuals_df[actuals_df['metric'] == metric_name][['date', 'value', 'source']].copy()
     forecast_data = forecasts_df[forecasts_df['metric'] == metric_name][['date', 'value', 'source']].copy()
     combined = pd.concat([actual_data, forecast_data], ignore_index=True)
     combined = combined.sort_values('date').reset_index(drop=True)
+
+    # Merge working days if provided
+    if working_days_df is not None:
+        combined['year'] = combined['date'].dt.year
+        combined['month'] = combined['date'].dt.month
+        combined = combined.merge(working_days_df, on=['year', 'month'], how='left')
+        combined = combined.drop(columns=['year', 'month'])
+
     return combined
 
 
-def create_metric_chart(metric_name, time_series_df):
-    """Create a Plotly figure for a single metric."""
+def build_subtitle(config):
+    """Build subtitle showing all models ordered by MAPE."""
+    models = config.get('models', [])
+    parts = []
+    for model in models:
+        name = model['name']
+        mape = model['mape']
+        is_best = model['is_best']
+        if mape is not None:
+            if is_best:
+                parts.append(f"<b>{name} ({mape:.2f}%)</b>")
+            else:
+                parts.append(f"{name} ({mape:.2f}%)")
+        else:
+            parts.append(name)
+    return ' | '.join(parts)
+
+
+def create_metric_chart(metric_name, time_series_df, comparison_df=None, working_days_df=None):
+    """Create a Plotly figure for a single metric with multiple model forecast lines."""
     config = METRICS_CONFIG[metric_name]
     df = time_series_df.copy()
 
     # Invert if needed (financial revenue is negative)
-    if config.get('invert', False):
+    invert = config.get('invert', False)
+    if invert:
         df['value'] = -df['value']
 
     # Split into actual and forecast
@@ -151,10 +262,19 @@ def create_metric_chart(metric_name, time_series_df):
     df_forecast = df[df['source'] == 'forecast'].copy()
 
     # For continuity, include last actual point in forecast line
+    last_actual_date = None
+    last_actual_value = None
+    last_actual_wd = None
+    if not df_actual.empty:
+        last_actual_date = df_actual['date'].max()
+        last_actual_value = df_actual.loc[df_actual['date'] == last_actual_date, 'value'].values[0]
+        if 'working_days' in df_actual.columns:
+            last_actual_wd = df_actual.loc[df_actual['date'] == last_actual_date, 'working_days'].values[0]
+
     if not df_actual.empty and not df_forecast.empty:
-        last_actual = df_actual.iloc[-1:].copy()
-        last_actual['source'] = 'forecast'
-        df_forecast = pd.concat([last_actual, df_forecast], ignore_index=True)
+        last_actual_row = df_actual.iloc[-1:].copy()
+        last_actual_row['source'] = 'forecast'
+        df_forecast = pd.concat([last_actual_row, df_forecast], ignore_index=True)
         df_forecast = df_forecast.sort_values('date')
 
     fig = go.Figure()
@@ -163,31 +283,152 @@ def create_metric_chart(metric_name, time_series_df):
     actual_x = df_actual['date'].dt.strftime('%Y-%m-%d').tolist()
     actual_y = df_actual['value'].tolist()
 
+    # Get working days for actual data
+    actual_wd = df_actual['working_days'].tolist() if 'working_days' in df_actual.columns else [None] * len(actual_x)
+
     # Actual line (Traveco green)
     fig.add_trace(go.Scatter(
         x=actual_x,
         y=actual_y,
+        customdata=actual_wd,
         mode='lines+markers',
         name='Ist-Werte',
         line=dict(color='rgb(0, 133, 42)', width=2.5),
         marker=dict(size=5),
-        hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<extra>Ist</extra>'
+        hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<br>Arbeitstage: %{customdata}<extra>Ist</extra>'
     ))
 
-    # Forecast line
-    if not df_forecast.empty:
-        forecast_x = df_forecast['date'].dt.strftime('%Y-%m-%d').tolist()
-        forecast_y = df_forecast['value'].tolist()
+    # Get models for this metric
+    models = config.get('models', [])
 
-        fig.add_trace(go.Scatter(
-            x=forecast_x,
-            y=forecast_y,
-            mode='lines+markers',
-            name='Prognose',
-            line=dict(color='#dc2626', width=3),
-            marker=dict(size=8, symbol='diamond'),
-            hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<extra>Prognose</extra>'
-        ))
+    # For financial metrics, load all model forecasts from comparison_df
+    if config['type'] == 'financial' and comparison_df is not None:
+        for model_info in models:
+            model_name = model_info['name']
+            is_best = model_info['is_best']
+
+            # Get forecast data for this model
+            model_data = comparison_df[
+                (comparison_df['metric'] == metric_name) &
+                (comparison_df['model'] == model_name)
+            ].copy()
+
+            if model_data.empty:
+                continue
+
+            # Invert if needed
+            if invert:
+                model_data['prediction'] = -model_data['prediction']
+
+            # Add working days for hover
+            if working_days_df is not None:
+                model_data['year'] = model_data['date'].dt.year
+                model_data['month'] = model_data['date'].dt.month
+                model_data = model_data.merge(working_days_df, on=['year', 'month'], how='left')
+                model_data = model_data.drop(columns=['year', 'month'])
+
+            # Add last actual point for continuity
+            if last_actual_date is not None:
+                last_row = pd.DataFrame({
+                    'date': [last_actual_date],
+                    'prediction': [last_actual_value],
+                    'working_days': [last_actual_wd] if last_actual_wd is not None else [None]
+                })
+                model_data = pd.concat([last_row, model_data], ignore_index=True)
+
+            model_data = model_data.sort_values('date')
+            model_x = model_data['date'].dt.strftime('%Y-%m-%d').tolist()
+            model_y = model_data['prediction'].tolist()
+            model_wd = model_data['working_days'].tolist() if 'working_days' in model_data.columns else [None] * len(model_x)
+
+            # Best model = solid line, others = dashed
+            line_style = dict(
+                color=MODEL_COLORS.get(model_name, '#6b7280'),
+                width=3 if is_best else 2,
+                dash='solid' if is_best else 'dash'
+            )
+            marker_style = dict(
+                size=8 if is_best else 6,
+                symbol='diamond' if is_best else 'square'
+            )
+
+            fig.add_trace(go.Scatter(
+                x=model_x,
+                y=model_y,
+                customdata=model_wd,
+                mode='lines+markers',
+                name=model_name,
+                line=line_style,
+                marker=marker_style,
+                visible=True if is_best else 'legendonly',  # Non-best models hidden by default
+                hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<br>Arbeitstage: %{customdata}<extra>' + model_name + '</extra>'
+            ))
+
+    # For operational metrics, use existing forecast data + comparison if available
+    elif config['type'] == 'operational':
+        # Best model forecast line (from time_series_df)
+        if not df_forecast.empty:
+            forecast_x = df_forecast['date'].dt.strftime('%Y-%m-%d').tolist()
+            forecast_y = df_forecast['value'].tolist()
+            forecast_wd = df_forecast['working_days'].tolist() if 'working_days' in df_forecast.columns else [None] * len(forecast_x)
+
+            best_model = models[0] if models else {'name': 'Prognose', 'is_best': True}
+            best_model_name = best_model['name']
+
+            fig.add_trace(go.Scatter(
+                x=forecast_x,
+                y=forecast_y,
+                customdata=forecast_wd,
+                mode='lines+markers',
+                name=best_model_name,
+                line=dict(color=MODEL_COLORS.get(best_model_name, '#dc2626'), width=3),
+                marker=dict(size=8, symbol='diamond'),
+                hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<br>Arbeitstage: %{customdata}<extra>' + best_model_name + '</extra>'
+            ))
+
+        # Add comparison model for operational metrics (XGBoost for revenue_total)
+        if comparison_df is not None and len(models) > 1:
+            for model_info in models[1:]:  # Skip best model
+                model_name = model_info['name']
+
+                # Check if we have comparison data
+                comp_data = comparison_df[
+                    (comparison_df['metric'] == metric_name) &
+                    (comparison_df['model'] == model_name)
+                ].copy()
+
+                if not comp_data.empty:
+                    # Add working days for hover
+                    if working_days_df is not None:
+                        comp_data['year'] = comp_data['date'].dt.year
+                        comp_data['month'] = comp_data['date'].dt.month
+                        comp_data = comp_data.merge(working_days_df, on=['year', 'month'], how='left')
+                        comp_data = comp_data.drop(columns=['year', 'month'])
+
+                    if last_actual_date is not None:
+                        last_row = pd.DataFrame({
+                            'date': [last_actual_date],
+                            'prediction': [last_actual_value],
+                            'working_days': [last_actual_wd] if last_actual_wd is not None else [None]
+                        })
+                        comp_data = pd.concat([last_row, comp_data], ignore_index=True)
+
+                    comp_data = comp_data.sort_values('date')
+                    comp_x = comp_data['date'].dt.strftime('%Y-%m-%d').tolist()
+                    comp_y = comp_data['prediction'].tolist()
+                    comp_wd = comp_data['working_days'].tolist() if 'working_days' in comp_data.columns else [None] * len(comp_x)
+
+                    fig.add_trace(go.Scatter(
+                        x=comp_x,
+                        y=comp_y,
+                        customdata=comp_wd,
+                        mode='lines+markers',
+                        name=model_name,
+                        line=dict(color=MODEL_COLORS.get(model_name, '#f97316'), width=2, dash='dash'),
+                        marker=dict(size=6, symbol='square'),
+                        visible='legendonly',  # Comparison models hidden by default
+                        hovertemplate='%{x}<br>' + config['unit'] + ': %{y:,.0f}<br>Arbeitstage: %{customdata}<extra>' + model_name + '</extra>'
+                    ))
 
     # Add vertical line at forecast start (Dec 2025)
     fig.add_shape(
@@ -200,10 +441,13 @@ def create_metric_chart(metric_name, time_series_df):
         line=dict(color='gray', width=1, dash='dot')
     )
 
+    # Build subtitle from model info
+    subtitle = build_subtitle(config)
+
     # Update layout
     fig.update_layout(
         title=dict(
-            text=f"<b>{config['title']}</b><br><span style='font-size:12px;color:gray'>{config['subtitle']}</span>",
+            text=f"<b>{config['title']}</b><br><span style='font-size:12px;color:gray'>{subtitle}</span>",
             font=dict(size=14)
         ),
         xaxis_title='',
@@ -345,7 +589,7 @@ def generate_yearly_summary_html(table_df):
             </tbody>
         </table>
         <p class="table-note">
-            * 2025: Jan-Sep Ist-Werte, Okt-Dez Prognose<br>
+            * 2025: Jan-Nov Ist-Werte, Dez Prognose<br>
             ** 2026: Vollständig Prognose
         </p>
     </div>
@@ -422,22 +666,28 @@ def create_dashboard():
     print("  Lade Finanzdaten...")
     fin_actuals, fin_forecasts = load_financial_data()
 
-    # Build time series for each metric
+    print("  Lade Vergleichs-Prognosen...")
+    comparison_df = load_comparison_forecasts()
+
+    print("  Lade Arbeitstage...")
+    working_days_df = load_working_days()
+
+    # Build time series for each metric (with working days)
     time_series = {}
 
     for metric in ['total_orders', 'revenue_total']:
         print(f"  Erstelle Zeitreihe für: {metric}")
-        time_series[metric] = build_operational_time_series(metric, operational_df)
+        time_series[metric] = build_operational_time_series(metric, operational_df, working_days_df)
 
     for metric in ['total_betriebsertrag', 'total_revenue', 'personnel_costs', 'external_driver_costs', 'ebt']:
         print(f"  Erstelle Zeitreihe für: {metric}")
-        time_series[metric] = build_financial_time_series(metric, fin_actuals, fin_forecasts)
+        time_series[metric] = build_financial_time_series(metric, fin_actuals, fin_forecasts, working_days_df)
 
     # Create figures
     figures = {}
     for metric in METRICS_CONFIG.keys():
         print(f"  Erstelle Diagramm für: {METRICS_CONFIG[metric]['title']}")
-        figures[metric] = create_metric_chart(metric, time_series[metric])
+        figures[metric] = create_metric_chart(metric, time_series[metric], comparison_df, working_days_df)
 
     # Build data table
     print("  Erstelle Datentabelle...")
@@ -755,6 +1005,50 @@ def create_dashboard():
             color: var(--traveco-text-light);
             padding-left: 10px;
         }
+
+        /* Information/Glossary styles */
+        .info-section {
+            max-width: 900px;
+            margin: 0 auto;
+            background: var(--traveco-white);
+            padding: 30px;
+            border: 1px solid #e0e0e0;
+        }
+        .info-section h3 {
+            font-size: 1.2rem;
+            color: var(--traveco-text);
+            margin-bottom: 25px;
+            padding-left: 10px;
+            border-left: 4px solid var(--traveco-green);
+        }
+        .glossary-item {
+            margin-bottom: 25px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .glossary-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .glossary-item h4 {
+            color: var(--traveco-green);
+            font-size: 1.05rem;
+            margin-bottom: 10px;
+            font-style: normal;
+        }
+        .glossary-item p {
+            color: var(--traveco-text);
+            line-height: 1.7;
+            font-size: 0.95rem;
+        }
+        .glossary-item .note {
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: var(--traveco-text-light);
+            font-style: italic;
+        }
+
         .footer {
             text-align: center;
             margin-top: 20px;
@@ -798,14 +1092,18 @@ def create_dashboard():
     <div class="tabs">
         <button class="tab-btn active" onclick="openTab(event, 'charts')">Diagramme</button>
         <button class="tab-btn" onclick="openTab(event, 'table')">Datentabelle</button>
+        <button class="tab-btn" onclick="openTab(event, 'info')">Information</button>
     </div>
 
     <!-- Charts Tab -->
     <div id="charts" class="tab-content active">
         <div class="legend-info">
             <span class="legend-actual">&#9632; Ist-Werte</span>
-            <span class="legend-forecast">&#9670; Prognose</span>
-            <span style="color:#6b7280">| Gestrichelte Linie = Prognosestart (Dez 2025)</span>
+            <span style="color:#2563eb;font-weight:600">&#9670; XGBoost</span>
+            <span style="color:#7c3aed;font-weight:600">&#9632; Prophet</span>
+            <span style="color:#f97316;font-weight:600">&#9632; Prior Year</span>
+            <span style="color:#14b8a6;font-weight:600">&#9632; Seasonal Naive</span>
+            <span style="color:#6b7280">| Klicken Sie auf Modellnamen in der Legende, um diese ein-/auszublenden</span>
         </div>
 
         <div class="section-title">Operative Kennzahlen (aus Auftragsdaten)</div>
@@ -843,55 +1141,63 @@ def create_dashboard():
         </div>
 
         <div class="summary-table">
-            <h3>Modell-Performance Übersicht</h3>
+            <h3>Modell-Performance Übersicht (Top 3 Modelle nach MAPE)</h3>
             <table>
                 <tr>
                     <th>Kennzahl</th>
                     <th>Datenquelle</th>
-                    <th>Bestes Modell</th>
-                    <th>MAPE</th>
+                    <th>#1 (Best)</th>
+                    <th>#2</th>
+                    <th>#3</th>
                 </tr>
                 <tr>
                     <td>Aufträge</td>
                     <td>QS Auftragsanalyse</td>
-                    <td>XGBoost</td>
-                    <td>~4%</td>
+                    <td style="color:#2563eb;font-weight:600">XGBoost (3.60%)</td>
+                    <td style="color:#14b8a6">Seasonal Naive</td>
+                    <td>-</td>
                 </tr>
                 <tr>
                     <td>Umsatz (Operativ)</td>
                     <td>QS Auftragsanalyse</td>
-                    <td>XGBoost</td>
-                    <td>~5%</td>
+                    <td style="color:#14b8a6;font-weight:600">Seasonal Naive (4.10%)</td>
+                    <td style="color:#2563eb">XGBoost (5.25%)</td>
+                    <td>-</td>
                 </tr>
                 <tr>
                     <td>Total Betriebsertrag (SK 0140)</td>
                     <td>Finanzen</td>
-                    <td>XGBoost</td>
-                    <td>3.48%</td>
+                    <td style="color:#2563eb;font-weight:600">XGBoost (3.06%)</td>
+                    <td style="color:#7c3aed">Prophet (3.78%)</td>
+                    <td style="color:#f97316">Prior Year (4.02%)</td>
                 </tr>
                 <tr>
-                    <td>Betriebsertrag (SK 35060000+35070000)</td>
+                    <td>Betriebsertrag (SK 3506+3507)</td>
                     <td>Finanzen</td>
-                    <td>XGBoost</td>
-                    <td>2.59%</td>
+                    <td style="color:#2563eb;font-weight:600">XGBoost (3.22%)</td>
+                    <td style="color:#7c3aed">Prophet (3.93%)</td>
+                    <td style="color:#f97316">Prior Year (4.15%)</td>
                 </tr>
                 <tr>
                     <td>Personalaufwand (SK 0151)</td>
                     <td>Finanzen</td>
-                    <td>Prophet</td>
-                    <td>3.19%</td>
+                    <td style="color:#2563eb;font-weight:600">XGBoost (2.98%)</td>
+                    <td style="color:#7c3aed">Prophet (3.45%)</td>
+                    <td style="color:#f97316">Prior Year (4.24%)</td>
                 </tr>
                 <tr>
-                    <td>Ausgangsfrachten LKW (SK 62802000)</td>
+                    <td>Ausgangsfrachten LKW (SK 6280)</td>
                     <td>Finanzen</td>
-                    <td>XGBoost</td>
-                    <td>5.73%</td>
+                    <td style="color:#f97316;font-weight:600">Prior Year (6.01%)</td>
+                    <td style="color:#2563eb">XGBoost (6.52%)</td>
+                    <td style="color:#7c3aed">Prophet (12.68%)</td>
                 </tr>
                 <tr>
                     <td>EBT (SK 0110)</td>
                     <td>Finanzen</td>
-                    <td>XGBoost</td>
-                    <td>100.90%</td>
+                    <td style="color:#2563eb;font-weight:600">XGBoost (92.89%)</td>
+                    <td style="color:#f97316">Prior Year (140.64%)</td>
+                    <td style="color:#7c3aed">Prophet (279.07%)</td>
                 </tr>
             </table>
         </div>
@@ -917,6 +1223,76 @@ def create_dashboard():
     html_content += table_html
 
     html_content += """
+        </div>
+    </div>
+
+    <!-- Information Tab -->
+    <div id="info" class="tab-content">
+        <div class="info-section">
+            <h3>Glossar: ML-Modelle und Kennzahlen</h3>
+
+            <div class="glossary-item">
+                <h4>MAPE (Mean Absolute Percentage Error)</h4>
+                <p>Die durchschnittliche prozentuale Abweichung zwischen Prognose und tatsächlichem Wert.
+                   Je niedriger der MAPE-Wert, desto besser ist das Modell. Ein MAPE von 5% bedeutet,
+                   dass die Prognose im Durchschnitt 5% vom echten Wert abweicht.</p>
+                <p class="note">Beispiel: Bei einem tatsächlichen Wert von CHF 100'000 und MAPE von 5%
+                   liegt die Prognose typischerweise zwischen CHF 95'000 und CHF 105'000.</p>
+            </div>
+
+            <div class="glossary-item">
+                <h4>XGBoost</h4>
+                <p>Ein modernes Machine-Learning-Modell (Extreme Gradient Boosting), das aus historischen
+                   Daten komplexe Muster lernt. Es berücksichtigt saisonale Schwankungen, Trends,
+                   Arbeitstage pro Monat und andere Einflussfaktoren, um zukünftige Werte vorherzusagen.</p>
+                <p class="note">Vorteil: Sehr präzise bei ausreichend historischen Daten.
+                   Oft das beste Modell für unsere Kennzahlen.</p>
+            </div>
+
+            <div class="glossary-item">
+                <h4>Prophet</h4>
+                <p>Ein von Meta (Facebook) entwickeltes Prognosemodell, das speziell für Geschäftszeitreihen
+                   optimiert wurde. Es erkennt automatisch saisonale Muster (jährlich, monatlich) und
+                   ist besonders robust bei fehlenden Daten oder Ausreissern.</p>
+                <p class="note">Vorteil: Gute Leistung ohne manuelle Parameter-Anpassung.
+                   Besonders geeignet für Kennzahlen mit starker Saisonalität.</p>
+            </div>
+
+            <div class="glossary-item">
+                <h4>Prior Year (Vorjahreswert)</h4>
+                <p>Die einfachste Prognosemethode: Der Wert des gleichen Monats im Vorjahr wird als
+                   Prognose verwendet. Diese Methode dient als Vergleichsbasis ("Benchmark") für die
+                   ML-Modelle und zeigt, ob komplexere Methoden tatsächlich besser sind.</p>
+                <p class="note">Beispiel: Die Prognose für März 2026 ist der tatsächliche Wert von März 2025.</p>
+            </div>
+
+            <div class="glossary-item">
+                <h4>Seasonal Naive</h4>
+                <p>Ähnlich wie Prior Year, aber optimiert für saisonale Muster. Diese Methode nutzt
+                   den Wert des gleichen Monats aus dem Vorjahr und berücksichtigt dabei saisonale
+                   Trends. Besonders effektiv für Kennzahlen mit starker Monats-Saisonalität.</p>
+                <p class="note">Bei manchen Kennzahlen (z.B. operativer Umsatz) übertrifft diese
+                   einfache Methode sogar komplexere ML-Modelle.</p>
+            </div>
+
+            <div class="glossary-item">
+                <h4>Arbeitstage</h4>
+                <p>Die Anzahl der Werktage pro Monat (ohne Wochenenden und Feiertage) beeinflusst
+                   viele Geschäftskennzahlen. Monate mit mehr Arbeitstagen haben tendenziell höhere
+                   Auftragsvolumen und Umsätze. Diese Information wird in den Prognosemodellen
+                   berücksichtigt und ist beim Überfahren der Datenpunkte sichtbar.</p>
+                <p class="note">Die Korrelation zwischen Arbeitstagen und Aufträgen beträgt 0.83 -
+                   ein starker Zusammenhang, der die Prognosegenauigkeit verbessert.</p>
+            </div>
+
+            <div class="glossary-item">
+                <h4>Bestes Modell (durchgezogene Linie)</h4>
+                <p>Für jede Kennzahl wurde das Modell mit dem niedrigsten MAPE als "bestes Modell"
+                   ausgewählt. Dieses wird im Diagramm als durchgezogene Linie dargestellt.
+                   Die anderen Modelle (gestrichelte Linien) dienen zum Vergleich.</p>
+                <p class="note">Die Modellauswahl basiert auf der Validierung mit historischen Daten
+                   (Wie gut hätte das Modell die Vergangenheit vorhergesagt?).</p>
+            </div>
         </div>
     </div>
 
