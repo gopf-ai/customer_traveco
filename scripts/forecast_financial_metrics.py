@@ -544,6 +544,76 @@ def main():
     print("  Uses same month from prior year for predictions")
     print("  (e.g., Oct 2025 prediction = Oct 2024 actual)")
 
+    # Generate forecasts from ALL top 3 models for each metric (for comparison display)
+    print(f"\n{'='*70}")
+    print("Generating forecasts from top 3 models per metric...")
+    print(f"{'='*70}")
+
+    all_model_forecasts = []
+    models_to_generate = ['XGBoost', 'Prophet', 'Prior Year']  # Top 3 models (exclude SARIMAX)
+
+    for metric in METRICS:
+        if metric not in all_results:
+            continue
+        results = all_results[metric]
+
+        # Get MAPE rankings for this metric
+        model_mapes = []
+        for model_name in models_to_generate:
+            if model_name in results and results[model_name]['mape'] is not None:
+                model_mapes.append((model_name, results[model_name]['mape']))
+        model_mapes.sort(key=lambda x: x[1])  # Sort by MAPE ascending
+
+        print(f"\n  {metric}:")
+        ts = prepare_time_series(df, metric, working_days_df)
+        ts_full = ts[ts['ds'] <= '2025-11-30'].copy()
+        last_date = ts_full['ds'].max()
+        n_periods = 13  # Dec 2025 + 2026
+
+        for model_name, mape in model_mapes:
+            print(f"    Generating {model_name} forecasts (MAPE: {mape:.2f}%)...")
+
+            if model_name == 'XGBoost':
+                xgb_model, xgb_train_df = train_xgboost(ts_full, metric)
+                forecasts = predict_xgboost(xgb_model, xgb_train_df, n_periods, last_date,
+                                            working_days_df, metric)
+            elif model_name == 'Prophet':
+                prophet_model = train_prophet(ts_full, metric)
+                forecasts = predict_prophet(prophet_model, n_periods, last_date,
+                                            working_days_df, metric)
+            elif model_name == 'Prior Year':
+                dates = pd.date_range(start=last_date + pd.DateOffset(months=1),
+                                      periods=n_periods, freq='MS')
+                predictions = []
+                for d in dates:
+                    prior_year = d.year - 1
+                    prior_value = ts_full[(ts_full['ds'].dt.year == prior_year) &
+                                          (ts_full['ds'].dt.month == d.month)]['y'].values
+                    if len(prior_value) > 0:
+                        predictions.append(prior_value[0])
+                    else:
+                        predictions.append(ts_full['y'].mean())
+                forecasts = pd.DataFrame({'ds': dates, 'prediction': predictions})
+
+            # Add to collection
+            for _, row in forecasts.iterrows():
+                all_model_forecasts.append({
+                    'date': row['ds'].strftime('%Y-%m-%d'),
+                    'metric': metric,
+                    'model': model_name,
+                    'prediction': row['prediction'],
+                    'mape': mape,
+                    'is_best': model_name == results['best']
+                })
+
+    # Save all model forecasts (overwrite file completely)
+    if all_model_forecasts:
+        comparison_file = OUTPUT_PATH / "comparison_forecasts.csv"
+        df_all_models = pd.DataFrame(all_model_forecasts)
+        df_all_models.to_csv(comparison_file, index=False)
+        print(f"\n  All model forecasts saved to: {comparison_file}")
+        print(f"  Total records: {len(df_all_models)}")
+
     return df_forecasts, df_validation
 
 
